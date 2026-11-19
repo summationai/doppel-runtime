@@ -99,14 +99,17 @@ Done when:
 
 ## 4. Gateway
 
+**Done 2026-11-19, except one live half.** `roles/gateway.py` on the model listener; a read-only `CodexHomes` broker stub (checkpoint 3 adds refresh and OpenBao); schema version 2 counts tokens per slot. Live: [scripts/live_gateway_check.py](../../scripts/live_gateway_check.py) ran a real `codex exec` with no sign-in of its own through the gateway on Steven's sign-in ("pong", 10,836 tokens counted to `u-steven`), and a capability nobody minted was refused. Troy's half waits for his sign-in (checkpoint 3); two payers are proven against a fake upstream. The usage-limit parsing hasn't met a real usage-limit answer yet.
+
 - Model route: capability → hash lookup → slot → payer → that payer's access token and account id; the request is passed to `chatgpt.com/backend-api/codex` with the response streamed back.
 - Usage counted per slot; the capability's token budget and expiry enforced; a usage-limit answer records the payer's reset time.
 - Posting route and broker on the internal listener only.
 
 Done when:
-- [ ] `codex exec` on the laptop, set to use the gateway as provider with a capability, completes a prompt on Steven's sign-in; the same with Troy's capability goes out on Troy's (the gateway's log shows the payer id, never the token).
-- [ ] An expired or unknown capability gets a 401; an over-budget one a refusal.
-- [ ] DSV-8: from a container on an `--internal` network with only the gateway's model route reachable, the internal listener and github.com both fail.
+- [x] `codex exec` on the laptop, set to use the gateway as provider with a capability, completes a prompt on Steven's sign-in (the gateway's log shows the payer id, never the token).
+- [ ] The same with Troy's capability goes out on Troy's sign-in, live. (Proven with a fake upstream; live after checkpoint 3.)
+- [x] An expired or unknown capability gets a 401; an over-budget one a refusal.
+- [x] DSV-8: from a container on an `--internal` network with only the gateway's model route reachable, the internal listener and github.com both fail ([tests/integration/test_dsv8_network.py](../../tests/integration/test_dsv8_network.py), opt-in with `DOPPEL_DOCKER_TESTS=1`).
 
 ## 5. Sandbox: image, harness, pod per PR
 
