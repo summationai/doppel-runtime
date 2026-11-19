@@ -11,12 +11,23 @@ One process with five roles:
 | Role | Job |
 | --- | --- |
 | Intake | GitHub events in (webhooks via the BFF, plus a reconcile poll) |
-| Scheduler | Matches each reviewer slot to its PR's pod once its conditions hold: CI, payer cap, usage window, host cap |
+| Scheduler | Matches each reviewer slot to its PR's pod once its conditions hold (settle, payer cap, usage window, host cap); runs each PR's merger, the only thing that approves |
 | Broker | Keeps a Codex home per user; refreshes under a per-user lock; durable copy in OpenBao |
 | Gateway | Swaps the assigned user's token into model calls; the only GitHub writer |
 | Sandbox manager | One gVisor pod per PR, with a read-only checkout per head from a mirror per repo |
 
 Pods never hold a token or reach GitHub. Records (tenants, users, apps, rules) live in the BFF; secrets, sandboxes and GitHub writes live here.
+
+## Develop
+
+```sh
+uv sync                       # Python 3.12+, deps and dev tools
+uv run pytest -q              # tests
+uv run ruff check . && uv run ruff format --check src tests
+uv run doppel-runtime serve   # listeners on 127.0.0.1:8700 (model), 8701 (internal), 8702 (health)
+```
+
+Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [src/doppel_runtime/config.py](src/doppel_runtime/config.py). Progress is tracked in [docs/specs/checkpoints.md](docs/specs/checkpoints.md).
 
 ## Docs
 
