@@ -14,8 +14,8 @@ from aiohttp import web
 
 from doppel_runtime import __version__
 from doppel_runtime.config import LISTENERS, Config
-from doppel_runtime.ledger import Ledger
 from doppel_runtime.roles import Role, make_roles
+from doppel_runtime.store import Ledger
 
 log = logging.getLogger("doppel_runtime")
 

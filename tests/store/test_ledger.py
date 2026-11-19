@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from doppel_runtime.ledger import SCHEMA_VERSION, Ledger
+from doppel_runtime.store import SCHEMA_VERSION, Ledger
 
 
 @pytest.fixture
@@ -25,6 +25,10 @@ def test_schema_is_migrated_and_uses_wal(ledger):
         "finding_anchors",
         "posts",
         "dispositions",
+        "pr_reviewers",
+        "merges",
+        "ci_status",
+        "usage_resets",
     } <= tables
 
 
