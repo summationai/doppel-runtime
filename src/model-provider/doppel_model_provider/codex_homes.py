@@ -1,14 +1,16 @@
-"""A Codex home per payer: `<homes_dir>/<payer>/auth.json`, or an explicit home for a payer.
+"""Each payer's Codex home, on the runtime's disk: `<root>/<tenant>/<user>/codex/auth.json`.
 
-The read path the gateway uses (a payer's credential), plus the file handling the broker needs
-(the sign-in as a bundle, written back atomically with owner-only permissions). Tokens are never
-printed or logged.
+A payer id is `<tenant>/<user>`, e.g. `summation/u-steven` (a tenant's API key can be
+`summation/tenant-key`). Folders are owner-only (0700) and Codex writes auth.json owner-only (0600).
+For now this disk is the only copy of a sign-in; a durable copy elsewhere comes later.
+
+The read path the gateway uses (a payer's credential), plus what the broker needs (the sign-in as
+Codex wrote it, every payer on disk). Tokens are never printed or logged.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -17,13 +19,15 @@ from doppel_shared.ports.credentials import Credential, NotSignedIn
 
 CHATGPT_BASE = "https://chatgpt.com/backend-api/codex"  # a ChatGPT sign-in's model endpoint
 OPENAI_BASE = "https://api.openai.com/v1"  # an API key's
-PAYER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_.-]{0,63}$")
+SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
-def check_payer(payer: str) -> str:
-    if not PAYER.match(payer) or ".." in payer:
-        raise NotSignedIn(f"not a payer id: {payer!r}")
-    return payer
+def split_payer(payer: str) -> tuple[str, str]:
+    """`<tenant>/<user>` -> (tenant, user). Anything else, or a segment that could leave the folder, is refused."""
+    parts = payer.split("/")
+    if len(parts) != 2 or not all(SEGMENT.match(p) and ".." not in p for p in parts):
+        raise NotSignedIn(f"not a payer id (want <tenant>/<user>): {payer!r}")
+    return parts[0], parts[1]
 
 
 def last_refresh(bundle: str | None) -> datetime | None:
@@ -36,20 +40,32 @@ def last_refresh(bundle: str | None) -> datetime | None:
 
 
 class CodexHomes:
-    def __init__(self, homes_dir: Path, overrides: dict[str, Path] | None = None):
-        self.homes_dir = homes_dir
-        self.overrides = dict(overrides or {})
+    def __init__(self, root: Path, overrides: dict[str, Path] | None = None):
+        self.root = root  # <data_dir>/tenants
+        self.overrides = dict(overrides or {})  # payer -> an existing Codex home (e.g. a dev's ~/.codex)
 
     def home(self, payer: str) -> Path:
         if payer in self.overrides:
             return self.overrides[payer]
-        return self.homes_dir / check_payer(payer)
+        tenant, user = split_payer(payer)
+        return self.root / tenant / user / "codex"
+
+    def make_home(self, payer: str) -> Path:
+        """Create the payer's home, owner-only all the way down from the tenants folder."""
+        home = self.home(payer)
+        if payer not in self.overrides:
+            for folder in (self.root, home.parent.parent, home.parent, home):
+                folder.mkdir(mode=0o700, exist_ok=True)
+        return home
 
     def payers(self) -> list[str]:
         """Every payer with a Codex home on disk."""
         found = set(self.overrides)
-        if self.homes_dir.is_dir():
-            found |= {p.name for p in self.homes_dir.iterdir() if p.is_dir() and PAYER.match(p.name)}
+        if self.root.is_dir():
+            for home in self.root.glob("*/*/codex"):
+                tenant, user = home.parent.parent.name, home.parent.name
+                if SEGMENT.match(tenant) and SEGMENT.match(user):
+                    found.add(f"{tenant}/{user}")
         return sorted(found)
 
     def bundle(self, payer: str) -> str | None:
@@ -58,16 +74,6 @@ class CodexHomes:
             return (self.home(payer) / "auth.json").read_text()
         except OSError:
             return None
-
-    def write(self, payer: str, bundle: str) -> None:
-        """Put a sign-in back on disk (restored from OpenBao): owner-only, replaced atomically."""
-        home = self.home(payer)
-        home.mkdir(mode=0o700, parents=True, exist_ok=True)
-        tmp = home / "auth.json.tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(bundle)
-        os.replace(tmp, home / "auth.json")
 
     def read(self, payer: str) -> Credential:
         bundle = self.bundle(payer)

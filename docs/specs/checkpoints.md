@@ -8,7 +8,7 @@ As of 2026-11-19 (Thursday). "Friday" in the spec is 2026-11-20.
 
 - Python 3.12+, managed with `uv`. Doppelwerk and steven-universe are both Python, so the ports stay close to their sources.
 - SQLite (WAL) for the ledger, one file on the runtime's own disk.
-- OpenBao for secrets; a dev server (`bao server -dev`) on the laptop, a real one on summini.
+- Model sign-ins on the runtime's disk, one owner-only Codex home per payer. A durable copy elsewhere (OpenBao) comes later.
 - Docker for pods. `runc` on the laptop; `runsc` (gVisor) on summini.
 - Tests: `pytest`. A test that proves a rule has the rule's ID in its name, e.g. `test_dsv_10_new_head_stops_old_reviewers`.
 
@@ -86,16 +86,16 @@ Done when, as table-driven tests:
 
 steven-universe's broker, per user. Reuse its code where it fits.
 
-- A `CODEX_HOME` per user under the runtime's data dir, mode `0700`.
+- A `CODEX_HOME` per payer at `<data_dir>/tenants/<tenant>/<user>/codex/`, owner-only. A payer id is `<tenant>/<user>`.
 - Device-code sign-in started through the internal route; the runtime returns the code and URL, the user finishes on OpenAI's page.
-- `auth.json` copied to OpenBao at `kv/users/<user>/codex` with a per-user policy; restored from OpenBao at startup.
+- For now the disk is the only copy (decided 2026-11-19, for simplicity). A durable copy in OpenBao comes later.
 - Refresh by the broker, under a per-user lock, on the rule from spike 0d. Status (`connected / expired / revoked`) recorded and exposed for the BFF.
 
 Done when:
 - [ ] Steven and Troy each connect by device code, and the status shows `connected`.
-- [ ] After deleting the local Codex homes and restarting, both come back from OpenBao.
-- [ ] Two refreshes started at once for one user do one refresh, and the sign-in still works after.
-- [ ] DSV-3 and DSV-13: one user's OpenBao policy can't read another's path; no token or `auth.json` content appears in any log (a test greps the logs).
+- [ ] After a restart, the broker finds both sign-ins on disk.
+- [ ] Two refreshes started at once for one user do one refresh, and the sign-in still works after. (Proven with a fake Codex; live with real sign-ins.)
+- [x] DSV-3 and DSV-13: a payer id can't reach outside `tenants/<tenant>/<user>/codex`; homes are owner-only; no token or `auth.json` content appears in any log (tests).
 
 ## 4. Gateway
 
@@ -143,7 +143,7 @@ Every install on summini is asked of Steven first. Nothing touches user `rc` or 
 
 - A new macOS user for the runtime.
 - A Linux VM (choice from open question 7), Docker, `runsc` registered as a runtime.
-- OpenBao, with the unseal decision made (by hand or auto-unseal).
+- A backup of `<data_dir>/tenants` (the only copy of every sign-in), or OpenBao with the unseal decision made.
 - The runtime deployed, running checkpoint 6's flow.
 
 Done when:

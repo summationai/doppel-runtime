@@ -1,9 +1,8 @@
-"""The broker against a fake Codex account and an in-memory store."""
+"""The broker against a fake Codex account, on a temporary disk."""
 
 import asyncio
 import json
 import logging
-import stat
 from datetime import UTC, datetime, timedelta
 
 import aiohttp
@@ -14,10 +13,10 @@ from doppel_model_provider import api
 from doppel_model_provider.broker import Broker
 from doppel_model_provider.codex_homes import CodexHomes
 from doppel_model_provider.codex_sdk import DeviceLogin
-from doppel_model_provider.openbao import StoreError
 from doppel_shared.ports.credentials import NotSignedIn
 
 NOW = datetime(2026, 11, 20, 10, 0, tzinfo=UTC)
+STEVEN, TROY = "summation/u-steven", "summation/u-troy"
 
 
 def bundle(token: str, refreshed: datetime) -> str:
@@ -45,8 +44,6 @@ class FakeAccount:
         (home / "auth.json").write_text(bundle(f"secret-v{self.refreshes + 1}", NOW))
 
     async def start_device_login(self, home):
-        home.mkdir(parents=True, exist_ok=True)
-
         async def wait():
             await self.approve.wait()
             if self.approved:
@@ -56,183 +53,127 @@ class FakeAccount:
         return DeviceLogin("https://auth.openai.com/codex/device", "ABCD-1234", wait)
 
 
-class FakeStore:
-    def __init__(self):
-        self.data: dict[str, str] = {}
-        self.broken = False
-
-    async def load(self, payer):
-        if self.broken:
-            raise StoreError("down")
-        return self.data.get(payer)
-
-    async def save(self, payer, value):
-        if self.broken:
-            raise StoreError("down")
-        self.data[payer] = value
-
-    async def delete(self, payer):
-        self.data.pop(payer, None)
-
-    async def payers(self):
-        return sorted(self.data)
-
-
 @pytest.fixture
 def world(tmp_path):
-    homes = CodexHomes(tmp_path / "homes")
-    account, store = FakeAccount(), FakeStore()
-    broker = Broker(homes, account, store, clock=lambda: NOW)
-    return homes, account, store, broker
+    homes = CodexHomes(tmp_path / "tenants")
+    account = FakeAccount()
+    return homes, account, Broker(homes, account, clock=lambda: NOW)
 
 
-def sign_in(homes, payer="u-steven", token="secret-v1", refreshed=NOW):
-    homes.write(payer, bundle(token, refreshed))
+def sign_in(homes, payer=STEVEN, token="secret-v1", refreshed=NOW):
+    homes.make_home(payer)
+    (homes.home(payer) / "auth.json").write_text(bundle(token, refreshed))
 
 
 async def test_credential_reads_the_payers_home(world):
-    homes, _, _, broker = world
+    homes, _, broker = world
     sign_in(homes)
-    assert (await broker.credential("u-steven")).headers["authorization"] == "Bearer secret-v1"
+    assert (await broker.credential(STEVEN)).headers["authorization"] == "Bearer secret-v1"
     with pytest.raises(NotSignedIn):
-        await broker.credential("u-troy")
+        await broker.credential(TROY)
 
 
 async def test_two_refreshes_at_once_refresh_once(world):
-    homes, account, store, broker = world
+    homes, account, broker = world
     sign_in(homes)
-    a, b = await asyncio.gather(broker.refresh("u-steven"), broker.refresh("u-steven"))
+    a, b = await asyncio.gather(broker.refresh(STEVEN), broker.refresh(STEVEN))
     assert account.refreshes == 1
     assert a.headers == b.headers and a.headers["authorization"] == "Bearer secret-v2"
-    assert json.loads(store.data["u-steven"])["tokens"]["access_token"] == "secret-v2"  # saved
 
 
 async def test_a_failed_refresh_is_not_signed_in_and_shows_in_status(world):
-    homes, account, _, broker = world
+    homes, account, broker = world
     sign_in(homes)
     account.fail = True
     with pytest.raises(NotSignedIn):
-        await broker.refresh("u-steven")
-    assert broker.status("u-steven")["state"] == "refresh_failed"
-
-
-async def test_restore_brings_a_lost_home_back_from_openbao(world):
-    homes, _, store, broker = world
-    store.data["u-steven"] = bundle("secret-v7", NOW)
-    await broker.restore()
-    assert (await broker.credential("u-steven")).headers["authorization"] == "Bearer secret-v7"
-    mode = stat.S_IMODE((homes.home("u-steven") / "auth.json").stat().st_mode)
-    assert mode == 0o600
-
-
-async def test_restore_keeps_the_newest_copy(world):
-    homes, _, store, broker = world
-    sign_in(homes, "u-steven", "secret-disk-new", NOW)
-    store.data["u-steven"] = bundle("secret-saved-old", NOW - timedelta(hours=1))
-    sign_in(homes, "u-troy", "secret-disk-old", NOW - timedelta(hours=1))
-    store.data["u-troy"] = bundle("secret-saved-new", NOW)
-    await broker.restore()
-    assert json.loads(store.data["u-steven"])["tokens"]["access_token"] == "secret-disk-new"  # OpenBao caught up
-    assert (await broker.credential("u-troy")).headers["authorization"] == "Bearer secret-saved-new"
+        await broker.refresh(STEVEN)
+    assert broker.status(STEVEN)["state"] == "refresh_failed"
 
 
 async def test_keep_fresh_refreshes_only_sign_ins_6_hours_old(world):
-    homes, account, _, broker = world
-    sign_in(homes, "u-steven", refreshed=NOW - timedelta(hours=7))
-    sign_in(homes, "u-troy", refreshed=NOW - timedelta(hours=1))
+    homes, account, broker = world
+    sign_in(homes, STEVEN, refreshed=NOW - timedelta(hours=7))
+    sign_in(homes, TROY, refreshed=NOW - timedelta(hours=1))
     await broker.keep_fresh_once()
     assert account.refreshes == 1
-    assert (await broker.credential("u-steven")).headers["authorization"] == "Bearer secret-v2"
-    assert (await broker.credential("u-troy")).headers["authorization"] == "Bearer secret-v1"
+    assert (await broker.credential(STEVEN)).headers["authorization"] == "Bearer secret-v2"
+    assert (await broker.credential(TROY)).headers["authorization"] == "Bearer secret-v1"
 
 
-async def test_keep_fresh_catches_openbao_up(world):
-    homes, _, store, broker = world
-    sign_in(homes)
-    await broker.keep_fresh_once()
-    assert "u-steven" in store.data
-
-
-async def test_a_store_outage_keeps_the_disk_working_and_is_retried(world):
-    homes, _, store, broker = world
-    sign_in(homes)
-    store.broken = True
-    await broker.keep_fresh_once()
-    assert broker.status("u-steven")["error"] == "not saved to OpenBao"
-    assert (await broker.credential("u-steven")).headers["authorization"] == "Bearer secret-v1"
-    store.broken = False
-    await broker.keep_fresh_once()
-    assert broker.status("u-steven")["error"] is None and broker.status("u-steven")["saved"]
+async def test_a_restarted_broker_finds_every_sign_in_on_disk(world):
+    homes, account, _ = world
+    sign_in(homes, STEVEN)
+    sign_in(homes, TROY)
+    fresh = Broker(CodexHomes(homes.root), account, clock=lambda: NOW)
+    assert fresh.homes.payers() == [STEVEN, TROY]
+    assert {fresh.status(p)["state"] for p in (STEVEN, TROY)} == {"connected"}
 
 
 async def test_device_code_sign_in(world):
-    homes, account, store, broker = world
-    code = await broker.login("u-troy")
+    homes, account, broker = world
+    code = await broker.login(TROY)
     assert (code.verification_url, code.user_code) == ("https://auth.openai.com/codex/device", "ABCD-1234")
-    assert await broker.login("u-troy") == code  # asking again returns the open one
-    assert broker.status("u-troy")["state"] == "signing_in"
+    assert await broker.login(TROY) == code  # asking again returns the open one
+    assert broker.status(TROY)["state"] == "signing_in"
     account.approve.set()
-    assert await broker.wait_for_login("u-troy")
-    assert broker.status("u-troy")["state"] == "connected"
-    assert "u-troy" in store.data
+    assert await broker.wait_for_login(TROY)
+    assert broker.status(TROY)["state"] == "connected"
+    assert (homes.root / "summation" / "u-troy" / "codex" / "auth.json").is_file()
 
 
 async def test_a_refused_sign_in(world):
-    _, account, _, broker = world
-    await broker.login("u-troy")
+    _, account, broker = world
+    await broker.login(TROY)
     account.approved = False
     account.approve.set()
-    assert not await broker.wait_for_login("u-troy")
-    assert broker.status("u-troy") | {"last_refresh": None} == {
-        "payer": "u-troy", "state": "signed_out", "last_refresh": None, "saved": False, "error": "sign-in failed",
-    }  # fmt: skip
+    assert not await broker.wait_for_login(TROY)
+    status = broker.status(TROY)
+    assert (status["state"], status["error"]) == ("signed_out", "sign-in failed")
 
 
-async def test_disconnect_removes_the_home_and_the_saved_copy(world):
-    homes, _, store, broker = world
+async def test_disconnect_removes_the_home(world):
+    homes, _, broker = world
     sign_in(homes)
-    await broker.save("u-steven")
-    await broker.disconnect("u-steven")
-    assert homes.bundle("u-steven") is None and store.data == {}
+    await broker.disconnect(STEVEN)
+    assert homes.bundle(STEVEN) is None
 
 
-@pytest.mark.parametrize("payer", ["../etc", ".hidden", "a/b", ""])
+@pytest.mark.parametrize("payer", ["u-steven", "../etc/x", "summation/..", "summation/.hidden", "a/b/c", ""])
 async def test_bad_payer_ids_are_refused(world, payer):
-    _, _, _, broker = world
+    _, _, broker = world
     with pytest.raises(NotSignedIn):
         await broker.login(payer)
 
 
 async def test_logs_never_hold_a_token(world, caplog):
-    homes, account, _, broker = world
+    homes, account, broker = world
     sign_in(homes, refreshed=NOW - timedelta(hours=7))
     with caplog.at_level(logging.DEBUG):
-        await broker.restore()
         await broker.keep_fresh_once()
         account.fail = True
         with pytest.raises(NotSignedIn):
-            await broker.refresh("u-steven")
-    assert "u-steven" in caplog.text
+            await broker.refresh(STEVEN)
+    assert STEVEN in caplog.text
     assert "secret-" not in caplog.text and "rt-" not in caplog.text
 
 
 async def test_the_routes(world):
-    homes, account, _, broker = world
+    homes, account, broker = world
     app = web.Application()
     api.add_routes(app, broker)
     server = TestServer(app)
     await server.start_server()
     async with aiohttp.ClientSession(base_url=str(server.make_url("/"))) as http:
-        async with http.post("/broker/u-troy/login") as r:
+        async with http.post("/broker/summation/u-troy/login") as r:
             assert r.status == 200 and (await r.json())["user_code"] == "ABCD-1234"
         account.approve.set()
-        await broker.wait_for_login("u-troy")
-        async with http.get("/broker/u-troy/status") as r:
+        await broker.wait_for_login(TROY)
+        async with http.get("/broker/summation/u-troy/status") as r:
             body = await r.json()
             assert body["state"] == "connected" and "secret" not in json.dumps(body)
-        async with http.get("/broker/..%2Fetc/status") as r:
+        async with http.get("/broker/summation/..%2F..%2Fetc/status") as r:
             assert r.status in (400, 404)
-        async with http.delete("/broker/u-troy") as r:
+        async with http.delete("/broker/summation/u-troy") as r:
             assert r.status == 200
-        assert homes.bundle("u-troy") is None
+        assert homes.bundle(TROY) is None
     await server.close()

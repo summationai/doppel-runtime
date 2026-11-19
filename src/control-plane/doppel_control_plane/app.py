@@ -12,7 +12,7 @@ import signal
 
 from aiohttp import web
 from doppel_gateway import MODEL_MAX_BYTES, ModelRoute
-from doppel_model_provider import Broker, CodexHomes, CodexSdkAccount, OpenBaoStore
+from doppel_model_provider import Broker, CodexHomes, CodexSdkAccount
 from doppel_model_provider import api as broker_api
 
 from doppel_control_plane import __version__
@@ -33,7 +33,6 @@ class Runtime:
         self.bound: dict[str, tuple[str, int]] = {}  # listener -> (host, port) actually bound
         self.gateway: ModelRoute | None = None
         self.broker: Broker | None = None
-        self._store: OpenBaoStore | None = None
         self._tasks: list[asyncio.Task] = []
 
     def _app(self, listener: str) -> web.Application:
@@ -64,14 +63,8 @@ class Runtime:
         if requeued:
             log.info("requeued %d slot(s) left running by the last process", requeued)
         self.roles = make_roles(self.ledger)
-        bao = self.config.openbao
-        if bao is not None:
-            self._store = OpenBaoStore(bao.addr, bao.token, mount=bao.mount, token_role=bao.token_role)
-        else:
-            log.warning("no OpenBao configured: sign-ins live on this disk only")
-        homes = CodexHomes(self.config.homes_dir, self.config.codex_homes)
-        self.broker = Broker(homes, CodexSdkAccount(), self._store)
-        await self.broker.restore()
+        homes = CodexHomes(self.config.tenants_dir, self.config.codex_homes)
+        self.broker = Broker(homes, CodexSdkAccount())
         self._tasks.append(asyncio.create_task(self.broker.keep_fresh()))
         self.gateway = ModelRoute(LedgerRuns(self.ledger), self.broker)
         for role in self.roles.values():
@@ -91,8 +84,6 @@ class Runtime:
         for task in self._tasks:
             task.cancel()
         self._tasks.clear()
-        if self._store is not None:
-            await self._store.close()
         for runner in reversed(self._runners):
             await runner.cleanup()
         self._runners.clear()

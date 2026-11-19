@@ -1,6 +1,6 @@
 """Checkpoint 4's live check: a real `codex exec` reaches OpenAI only through the gateway.
 
-    uv run python scripts/live_gateway_check.py --payer u-steven --home ~/.codex
+    uv run python scripts/live_gateway_check.py --payer summation/u-steven --home ~/.codex
 
 Starts the runtime in-process on 127.0.0.1, gives one running slot a capability paid by `--payer`
 (whose Codex home is `--home`), and runs `codex exec` with an empty Codex home of its own: it has
@@ -94,7 +94,7 @@ async def main(payer: str, home: Path) -> int:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--payer", default="u-steven")
+    p.add_argument("--payer", default="summation/u-steven")
     p.add_argument("--home", type=Path, default=Path("~/.codex"))
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
