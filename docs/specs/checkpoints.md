@@ -88,7 +88,7 @@ steven-universe's broker, per user. Reuse its code where it fits.
 
 - A `CODEX_HOME` per payer at `<data_dir>/tenants/<tenant>/<user>/codex/`, owner-only. A payer id is `<tenant>/<user>`.
 - Device-code sign-in started through the internal route; the runtime returns the code and URL, the user finishes on OpenAI's page.
-- For now the disk is the only copy (decided 2026-11-19, for simplicity). A durable copy in OpenBao comes later.
+- **Temporary store** (decided 2026-11-19, for simplicity): the disk is the only copy, in the runtime's data folder, which on summini must be a mounted volume. It moves to a secret manager (OpenBao) later.
 - Refresh by the broker, under a per-user lock, on the rule from spike 0d. Status (`connected / expired / revoked`) recorded and exposed for the BFF.
 
 Done when:
