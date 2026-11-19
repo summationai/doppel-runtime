@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -75,3 +76,16 @@ def test_a_slot_left_running_by_a_crash_is_queued_again(tmp_path):
         proc.send_signal(signal.SIGTERM)
         proc.wait(10)
         db.close()
+
+
+def test_dsv_8_sign_in_routes_are_on_the_internal_listener_only(tmp_path):
+    proc, ports = start(tmp_path)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{ports['internal']}/broker/u-steven/status", timeout=5) as r:
+            assert json.loads(r.read())["state"] == "signed_out"
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(f"http://127.0.0.1:{ports['model']}/broker/u-steven/status", timeout=5)
+        assert e.value.code == 404
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(10)
