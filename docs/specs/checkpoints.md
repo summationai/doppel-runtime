@@ -50,9 +50,9 @@ Answer the open questions that decide the harness's shape before writing it. Eac
 - Config from a file plus env; no secrets in the file.
 
 Done when:
-- [ ] `doppel-runtime serve` starts and answers health on every listener.
-- [ ] Inserting the same slot twice, including a non-command slot (`command_id = ''`), leaves one row.
-- [ ] Killing the process with a slot `running` and restarting puts it back to `queued`.
+- [x] `doppel-runtime serve` starts and answers health on every listener.
+- [x] Inserting the same slot twice, including a non-command slot (`command_id = ''`), leaves one row.
+- [x] Killing the process with a slot `running` and restarting puts it back to `queued`.
 - [ ] CI runs `pytest` and a linter on every push.
 
 ## 2. Scheduler: matching with fakes

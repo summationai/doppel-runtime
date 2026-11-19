@@ -18,6 +18,17 @@ One process with five roles:
 
 Pods never hold a token or reach GitHub. Records (tenants, users, apps, rules) live in the BFF; secrets, sandboxes and GitHub writes live here.
 
+## Develop
+
+```sh
+uv sync                       # Python 3.12+, deps and dev tools
+uv run pytest -q              # tests
+uv run ruff check . && uv run ruff format --check src tests
+uv run doppel-runtime serve   # listeners on 127.0.0.1:8700 (model), 8701 (internal), 8702 (health)
+```
+
+Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [src/doppel_runtime/config.py](src/doppel_runtime/config.py). Progress is tracked in [docs/specs/checkpoints.md](docs/specs/checkpoints.md).
+
 ## Docs
 
 - [docs/specs/doppel-service.md](docs/specs/doppel-service.md): the spec. Decisions, scheduler, sandbox, credentials, rules (DSV-1 to DSV-14), the Friday demo and open questions.
