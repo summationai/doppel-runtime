@@ -46,7 +46,7 @@ Answer the open questions that decide the harness's shape before writing it. Eac
 
 **Done 2026-11-19.** `doppel-runtime serve`, the ledger, crash recovery and CI; 14 tests.
 
-- `uv` project, package `doppel_runtime`, one process started by `doppel-runtime serve`.
+- `uv` project, one process started by `doppel-runtime serve`. (Since split into components: see the README's Layout.)
 - Five role modules (`intake`, `scheduler`, `broker`, `gateway`, `sandbox`) wired in one asyncio process, with three listeners: the gateway's model route, an internal route (posting, broker, runtime API), and health.
 - The ledger: the `prs` and `slots` tables from the spec, plus Doppelwerk's commands, findings, posts and dispositions tables, all keyed by tenant. Migrations in code.
 - Config from a file plus env; no secrets in the file.
@@ -59,9 +59,9 @@ Done when:
 
 ## 2. Scheduler and merger, with fakes
 
-**Done 2026-11-19.** `core/` (commands, payer, matching, merger), `roles/scheduler.py`, fakes for the ports; 107 tests including a layering test. The scheduler isn't wired into `serve` yet: it needs the real sandbox and GitHub ports (checkpoints 5 and 6).
+**Done 2026-11-19.** `control-plane/.../core/` (commands, payer, matching, merger), `control-plane/.../scheduler.py`, fakes for the ports in `doppel_shared.testing`; 107 tests including a layering test. The scheduler isn't wired into `serve` yet: it needs the real sandbox and GitHub ports (checkpoints 5 and 6).
 
-The decisions are pure functions in `core/` (`matching.check`, `merger.decide`, `commands.parse`, `payer.payer_for`); `roles/scheduler.py` holds the event handlers and `tick(now)`. GitHub, Codex and Docker are faked.
+The decisions are pure functions in the control plane's `core/` (`matching.check`, `merger.decide`, `commands.parse`, `payer.payer_for`); `scheduler.py` holds the event handlers and `tick(now)`. GitHub, Codex and Docker are faked.
 
 - Events: PR opened, review requested, synchronize, closed, command, CI done.
 - Commands: parse `@doppelwerk <command> [reviewers…] [description]` into `commands` (`commands` gains `command` and `description`); `review` queues one slot per target with `reason = command`; `help` and unknown commands reply.
@@ -99,7 +99,7 @@ Done when:
 
 ## 4. Gateway
 
-**Done 2026-11-19, except one live half.** `roles/gateway.py` on the model listener; a read-only `CodexHomes` broker stub (checkpoint 3 adds refresh and OpenBao); schema version 2 counts tokens per slot. Live: [scripts/live_gateway_check.py](../../scripts/live_gateway_check.py) ran a real `codex exec` with no sign-in of its own through the gateway on Steven's sign-in ("pong", 10,836 tokens counted to `u-steven`), and a capability nobody minted was refused. Troy's half waits for his sign-in (checkpoint 3); two payers are proven against a fake upstream. The usage-limit parsing hasn't met a real usage-limit answer yet.
+**Done 2026-11-19, except one live half.** `src/gateway` (`ModelRoute`) on the model listener, reading runs through the `Runs` port; a read-only `CodexHomes` in `src/model-provider` (checkpoint 3 adds refresh and OpenBao); schema version 2 counts tokens per slot. Live: [scripts/live_gateway_check.py](../../scripts/live_gateway_check.py) ran a real `codex exec` with no sign-in of its own through the gateway on Steven's sign-in ("pong", 10,836 tokens counted to `u-steven`), and a capability nobody minted was refused. Troy's half waits for his sign-in (checkpoint 3); two payers are proven against a fake upstream. The usage-limit parsing hasn't met a real usage-limit answer yet.
 
 - Model route: capability → hash lookup → slot → payer → that payer's access token and account id; the request is passed to `chatgpt.com/backend-api/codex` with the response streamed back.
 - Usage counted per slot; the capability's token budget and expiry enforced; a usage-limit answer records the payer's reset time.

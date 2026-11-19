@@ -24,6 +24,7 @@ pytestmark = pytest.mark.skipif(
 
 REPO = Path(__file__).resolve().parents[2]
 IMAGE = "python:3.12-slim"
+PYTHONPATH = ":".join(f"/src/{c}" for c in ("shared", "control-plane", "gateway", "model-provider"))
 
 PROBE = r"""
 import json, socket, urllib.request, urllib.error
@@ -59,11 +60,11 @@ def network():
     try:
         docker(
             "run", "-d", "--name", gw, "-v", f"{REPO}/src:/src:ro",
-            "-e", "PYTHONPATH=/src", "-e", "DOPPEL_DATA_DIR=/tmp/doppel",
+            "-e", f"PYTHONPATH={PYTHONPATH}", "-e", "DOPPEL_DATA_DIR=/tmp/doppel",
             "-e", "DOPPEL_MODEL_HOST=0.0.0.0", "-e", "DOPPEL_MODEL_PORT=8700",
             "-e", "DOPPEL_INTERNAL_HOST=127.0.0.1", "-e", "DOPPEL_INTERNAL_PORT=8701",
             "-e", "DOPPEL_HEALTH_HOST=127.0.0.1", "-e", "DOPPEL_HEALTH_PORT=8702",
-            IMAGE, "sh", "-c", "pip install -q aiohttp && python -m doppel_runtime serve",
+            IMAGE, "sh", "-c", "pip install -q aiohttp && python -m doppel_control_plane serve",
         )  # fmt: skip
         docker("network", "connect", "--alias", "gateway", net, gw)
         deadline = time.monotonic() + 180
