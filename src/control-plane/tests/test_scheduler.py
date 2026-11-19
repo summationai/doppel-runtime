@@ -413,3 +413,27 @@ def test_a_pr_idle_for_3_days_loses_its_pod_and_a_command_brings_it_back(w):
     w.s.tick(at(days=4, seconds=1))
     assert w.pr()["state"] == "open" and w.pr()["pod_id"] == "pod-2"
     assert w.sandbox.started[-1][1].head_sha == "aaa111"
+
+
+def test_dsv_11_red_ci_after_approval_withdraws_it_on_the_same_head(w):
+    """RC's review #1: a COMMENT doesn't cancel an APPROVE on GitHub, so the merger must dismiss its own."""
+    w.open_with_steven()
+    w.s.tick(at(91))
+    w.finish("repo-owner")
+    w.s.ci(PR, "aaa111", "success", at(300))
+    approval = w.github.reviews[-1].review_id
+    w.s.ci(PR, "aaa111", "failure", at(400))  # a re-run goes red; no push
+    assert w.github.dismissed == [approval]
+    assert w.github.events(merger_only=True) == ["APPROVE", "COMMENT"]
+    assert w.ledger.value("SELECT decision FROM merges") == "blocked"
+
+
+def test_dsv_11_a_late_p1_after_approval_withdraws_it(w):
+    w.open_with_steven()
+    w.s.tick(at(91))
+    w.finish("repo-owner")
+    w.s.ci(PR, "aaa111", "success", at(300))
+    approval = w.github.reviews[-1].review_id
+    w.finish("steven", kind="changes_requested", findings=[finding("F1", "P1")], now=at(400))
+    assert w.github.dismissed == [approval]
+    assert w.ledger.value("SELECT decision FROM merges") == "blocked"

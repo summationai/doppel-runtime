@@ -1,6 +1,6 @@
 # Doppel as a Service: runtime spec
 
-Status: design, nothing built or run yet. As of 2026-11-19.
+Status: being built; see [checkpoints.md](checkpoints.md). Open review findings: [RC's review](../reviews/2026-11-19-rc-review.md). As of 2026-11-19.
 Handoff copy: [Doppel as a Service](https://claude.ai/artifact/JaZBwBpA2jTUhEwNUxTV8X). This file is the source of truth; the doc is only how it was passed over.
 
 Doppel as a service turns Doppelwerk, which reviews Summation's PRs from one Mac mini on one person's subscriptions, into a multi-tenant service. Most of the parts already exist. Doppelwerk does the review. steven-universe already holds a subscription sign-in in OpenBao and lets gVisor sandboxes use it through a gateway, without the token entering the sandbox.
@@ -367,7 +367,7 @@ Each rule needs a test or a run that proves it, with its ID in the test name.
 - **DSV-8:** The pod's network reaches only the gateway's model route; every other destination is refused. The gateway's GitHub-posting route and the broker listen where pods can't reach them. Each reviewer's model calls carry a capability the scheduler minted for that run. It names one user, expires with the run, and has a token budget.
 - **DSV-9:** Rules, guides and repo context come from the PR's base ref, never its head. The head's own agent instruction files are not loaded as instructions.
 - **DSV-10:** A new head stops that PR's reviewers still running on the old head and schedules the new head in the same pod. A merged or closed PR stops its reviewers and deletes its pod and checkouts. A head's checkout is deleted once no slot uses it.
-- **DSV-11:** Verdicts and posting keep Doppelwerk's contract: P0 to P3 findings; one grouped COMMENT review per reviewer per head. Reviewers never approve. Only the PR's merger approves, and only when every required reviewer has a verdict on the current head, none of them `stood_down`, CI is green, and no P0 or P1 from any reviewer is open after dispositions. A blocked merger posts a COMMENT, never REQUEST_CHANGES. A new head dismisses the merger's approval.
+- **DSV-11:** Verdicts and posting keep Doppelwerk's contract: P0 to P3 findings; one grouped COMMENT review per reviewer per head. Reviewers never approve. Only the PR's merger approves, and only when every required reviewer has a verdict on the current head, none of them `stood_down`, CI is green, and no P0 or P1 from any reviewer is open after dispositions. A blocked merger posts a COMMENT, never REQUEST_CHANGES. The merger dismisses its own approval on any move away from `approved`, not only on a new head: a COMMENT doesn't cancel an APPROVE on GitHub.
 - **DSV-12:** Each user has a concurrency cap, starting at 2. When a provider reports a usage-window limit, that user's slots wait until the reset, and the PR says so.
 - **DSV-13:** Tenants and users stay apart: the ledger is keyed by tenant; each user has their own Codex home under their tenant's folder, and a payer id can't reach outside it; every capability in a pod names a user of that pod's tenant; a verdict is scanned for credential-shaped strings before it is posted.
 - **DSV-14:** The runtime holds each PR's current head and every review it posted. A pod keeps nothing that has to outlive it, so deleting one loses no history.
@@ -472,7 +472,7 @@ Anthropic, through [contact sales](https://www.anthropic.com/contact-sales), bef
 6. **App-wide reviewers.** The tenant's API key, or an owner's opted-in subscription? For Friday there is no API key path yet, so whose sign-in pays?
 7. **The Linux VM on summini.** Colima, Lima, OrbStack or Docker Desktop, and does gVisor run in it on Apple silicon?
 8. **The GitHub App.** A new public App, or the existing App 4213368 (Summation only, with `contents: write`, more than a reviewer needs)?
-9. **Branch protection.** Does an App's APPROVE count toward required reviews? Secondary sources say yes when the repo's settings allow it. Test on the demo repo.
+9. ~~**Branch protection.**~~ Answered: an App's APPROVE counts. `doppelwerk[bot]`'s APPROVE satisfied a required review on agent-cloud on 2026-11-19 ([RC's review](../reviews/2026-11-19-rc-review.md), #9).
 10. **Rules format.** Keep Doppelwerk's files (`doppel.yaml`, `SKILL.md`, `scopes.yaml`, `watchouts/`) as data the UI edits, or a simpler schema? The first keeps every existing persona working.
 11. **Personal rubrics.** Does the UI help a new user build theirs from review history, or start them on a default?
 12. **Long-term home.** Summini and this runtime, or Crew as `pr-review.md` plans?

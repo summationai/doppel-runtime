@@ -1,5 +1,5 @@
-"""The Codex SDK calls the broker makes. Codex itself signs in and refreshes: this code never calls
-OpenAI's token endpoint, so it follows whatever Codex does as that changes.
+"""A Codex account's sign-in, through the Codex SDK: the two calls the broker makes. Codex itself
+signs in and refreshes: this code never calls OpenAI's token endpoint, so it follows whatever Codex does.
 
 `Account` is the interface the broker uses; `CodexSdkAccount` is the real one (the SDK starts a
 `codex app-server` for each call, in the payer's home). Tests use a fake.
