@@ -1,0 +1,11 @@
+from doppel_runtime.core.payer import payer_for
+from tests.fakes import REPO_OWNER, STEVEN
+
+
+def test_personal_reviewer_runs_on_its_owner_whatever_the_app_payer():
+    assert payer_for(STEVEN, app_payer="key:summation") == "u-steven"
+
+
+def test_app_reviewer_runs_on_the_app_payer():
+    assert payer_for(REPO_OWNER, app_payer="key:summation") == "key:summation"
+    assert payer_for(REPO_OWNER, app_payer=None) is None

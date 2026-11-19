@@ -192,18 +192,24 @@ The merger posts a formal review only when its decision changes: APPROVE when `a
 ```sql
 prs   (id, tenant, repo, pr,
        current_head,
+       settle_until,      -- automatic reviews wait until then after a push
        pod_id,            -- null while the PR has no pod
        last_review_at,    -- drives the 3-day idle cleanup
        status_comment_id, -- the merger's status comment on the PR, edited in place
+       status_body,       -- what it says now, so unchanged text isn't re-sent
        state)             -- open | idle | merged | closed
 UNIQUE (tenant, repo, pr)
+
+pr_reviewers (pr_id, reviewer,
+       source)            -- app | requested: who is on the PR, and so who a bare command means
+PRIMARY KEY (pr_id, reviewer)
 
 slots (id, pr_id, head_sha, reviewer, payer_user,
        reason,            -- review_requested | app | command
        command_id,        -- '' when not a command: SQLite treats NULLs as distinct
        state,             -- queued | blocked | running | posted | failed | skipped | cancelled
-       waiting_on,        -- settle | payer_cap | usage_window, while queued
-       not_before,        -- end of the settle window or the usage reset
+       waiting_on,        -- settle | payer_cap | usage_window | host_cap, while queued
+       not_before,        -- when the wait ends, if known
        attempts, capability_hash,
        verdict)           -- the reviewer's verdict file (Doppelwerk's verdict.schema.json)
 UNIQUE (pr_id, head_sha, reviewer, command_id)
@@ -214,6 +220,9 @@ merges (pr_id, head_sha,
        review_id,         -- the formal review it posted, if any
        decided_at)
 PRIMARY KEY (pr_id, head_sha)
+
+ci_status    (pr_id, head_sha, state)   -- pending | success | failure, as intake reports it
+usage_resets (payer, reset_at)          -- the gateway records a usage limit; that payer's slots wait
 ```
 
 `commands` holds each parsed command: `comment_id` (the key: acted on once), `author`, `command`, `targets`, `description`, the raw `body`, and a `state` that ends `responded` or `refused`. Plus Doppelwerk's findings, anchors and posts tables, keyed by tenant and PR, and `dispositions` (a person's response to a finding). A slot's posted review lives in `posts`. WAL mode is fine on the Linux VM's own disk; Doppelwerk's WAL trouble came from summini's virtiofs mount.

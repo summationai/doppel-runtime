@@ -18,6 +18,21 @@ One process with five roles:
 
 Pods never hold a token or reach GitHub. Records (tenants, users, apps, rules) live in the BFF; secrets, sandboxes and GitHub writes live here.
 
+## Layout
+
+```
+src/doppel_runtime/
+  types/   plain data shared by every layer: dataclasses and enums
+  core/    pure decisions: command parsing, payer choice, slot matching, the merger
+  ports/   interfaces to the outside (Protocols): directory (BFF), sandbox, GitHub
+  store/   persistence: the ledger and its schema
+  roles/   the five roles: wire core + store + ports together and handle events
+  app.py, cli.py, config.py: the process
+tests/     mirrors the layers; tests/fakes.py stands in for the ports
+```
+
+`types` imports nothing of ours; `core`, `ports` and `store` import only `types`; `roles` may import all four. [tests/test_layering.py](tests/test_layering.py) enforces it. Run the package with `python -m doppel_runtime` or `doppel-runtime`, never a file inside it: running from inside the package would put `types/` ahead of Python's own `types` module.
+
 ## Develop
 
 ```sh

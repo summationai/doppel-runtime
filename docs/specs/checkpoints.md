@@ -59,26 +59,28 @@ Done when:
 
 ## 2. Scheduler and merger, with fakes
 
-The matcher is a pure function, `ready_slots(ledger, now) -> list[Slot]`, plus event handlers that write slots. GitHub, Codex and Docker are faked.
+**Done 2026-11-19.** `core/` (commands, payer, matching, merger), `roles/scheduler.py`, fakes for the ports; 107 tests including a layering test. The scheduler isn't wired into `serve` yet: it needs the real sandbox and GitHub ports (checkpoints 5 and 6).
+
+The decisions are pure functions in `core/` (`matching.check`, `merger.decide`, `commands.parse`, `payer.payer_for`); `roles/scheduler.py` holds the event handlers and `tick(now)`. GitHub, Codex and Docker are faked.
 
 - Events: PR opened, review requested, synchronize, closed, command, CI done.
-- Commands: parse `@doppelwerk <command> [reviewers…] [description]` into `commands` (schema v2 adds `command` and `description`); `review` queues one slot per target with `reason = command`; `help` and unknown commands reply.
+- Commands: parse `@doppelwerk <command> [reviewers…] [description]` into `commands` (`commands` gains `command` and `description`); `review` queues one slot per target with `reason = command`; `help` and unknown commands reply.
 - Conditions: settle (90 s, reset on each push), payer cap (2), usage window, host cap (10), payer has a sign-in (`blocked` if not). Reviewers don't wait for CI.
-- The merger: a pure function of the PR's current head, its reviewers' verdicts, CI, findings and dispositions, giving `waiting_reviews`, `waiting_ci`, `blocked` or `approved`. Schema v2 adds `merges` and `prs.status_comment_id`, drops `ci` from `slots.waiting_on`, and moves the posted review id to `posts` only.
+- The merger: a pure function of the PR's current head, its reviewers' verdicts, CI, findings and dispositions, giving `waiting_reviews`, `waiting_ci`, `blocked` or `approved`. The schema gains `merges`, `pr_reviewers`, `ci_status`, `usage_resets` and `prs.settle_until`/`status_comment_id`, drops `ci` from `slots.waiting_on`, and keeps the posted review id in `posts` only. (Edited into schema version 1: no ledger existed yet.)
 - Head moves: running slots on the old head get a stop; queued ones move to the new head.
 - Pod lifecycle: created on the first ready slot, idle after its last slot, deleted after 3 days idle or on close; a command brings it back.
 - Who pays: personal → owner; app-wide → tenant key, else an opted-in owner; never anyone else.
 
 Done when, as table-driven tests:
-- [ ] DSV-4: a slot never gets a payer other than its owner or an opted-in owner, even when that payer is capped or out of usage.
-- [ ] DSV-10: a push stops old-head slots and queues the new head in the same pod; close deletes the pod.
-- [ ] DSV-12: a third slot for one payer waits; a usage-limit reset holds that payer's slots until the reset.
-- [ ] Reviewers start without waiting for CI; CI only moves the merger.
-- [ ] DSV-11: the merger approves only with every required reviewer done on the current head, none stood down, CI green, and no open P0 or P1 from any reviewer; a personal reviewer's P1 blocks; a person resolving it unblocks with no model run; blocked posts a COMMENT; a push dismisses the approval.
-- [ ] The merger posts a formal review only when its decision changes.
-- [ ] Commands: `@doppelwerk review steven look at the retry cap` records command `review`, target `steven`, the description, and queues one command slot on the current head that skips the settle window; `@doppelwerk steven` and bare `@doppelwerk` mean review; an unknown command is refused with a reply.
-- [ ] DSV-4 with commands: Troy commanding Steven's reviewer runs on Steven's sign-in; it is refused when Steven wasn't requested on the PR.
-- [ ] A PR idle for 3 days loses its pod; a command recreates it on the current head.
+- [x] DSV-4: a slot never gets a payer other than its owner or an opted-in owner, even when that payer is capped or out of usage.
+- [x] DSV-10: a push stops old-head slots and queues the new head in the same pod; close deletes the pod.
+- [x] DSV-12: a third slot for one payer waits; a usage-limit reset holds that payer's slots until the reset.
+- [x] Reviewers start without waiting for CI; CI only moves the merger.
+- [x] DSV-11: the merger approves only with every required reviewer done on the current head, none stood down, CI green, and no open P0 or P1 from any reviewer; a personal reviewer's P1 blocks; a person resolving it unblocks with no model run; blocked posts a COMMENT; a push dismisses the approval.
+- [x] The merger posts a formal review only when its decision changes.
+- [x] Commands: `@doppelwerk review steven look at the retry cap` records command `review`, target `steven`, the description, and queues one command slot on the current head that skips the settle window; `@doppelwerk steven` and bare `@doppelwerk` mean review; an unknown command is refused with a reply.
+- [x] DSV-4 with commands: Troy commanding Steven's reviewer runs on Steven's sign-in; it is refused when Steven wasn't requested on the PR.
+- [x] A PR idle for 3 days loses its pod; a command recreates it on the current head.
 
 ## 3. Broker
 
