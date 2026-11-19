@@ -62,6 +62,7 @@ Done when:
 The matcher is a pure function, `ready_slots(ledger, now) -> list[Slot]`, plus event handlers that write slots. GitHub, Codex and Docker are faked.
 
 - Events: PR opened, review requested, synchronize, closed, command, CI done.
+- Commands: parse `@doppelwerk <command> [reviewers…] [description]` into `commands` (schema v2 adds `command` and `description`); `review` queues one slot per target with `reason = command`; `help` and unknown commands reply.
 - Conditions: settle (90 s, reset on each push), payer cap (2), usage window, host cap (10), payer has a sign-in (`blocked` if not). Reviewers don't wait for CI.
 - The merger: a pure function of the PR's current head, its reviewers' verdicts, CI, findings and dispositions, giving `waiting_reviews`, `waiting_ci`, `blocked` or `approved`. Schema v2 adds `merges` and `prs.status_comment_id`, drops `ci` from `slots.waiting_on`, and moves the posted review id to `posts` only.
 - Head moves: running slots on the old head get a stop; queued ones move to the new head.
@@ -75,6 +76,8 @@ Done when, as table-driven tests:
 - [ ] Reviewers start without waiting for CI; CI only moves the merger.
 - [ ] DSV-11: the merger approves only with every required reviewer done on the current head, none stood down, CI green, and no open P0 or P1 from any reviewer; a personal reviewer's P1 blocks; a person resolving it unblocks with no model run; blocked posts a COMMENT; a push dismisses the approval.
 - [ ] The merger posts a formal review only when its decision changes.
+- [ ] Commands: `@doppelwerk review steven look at the retry cap` records command `review`, target `steven`, the description, and queues one command slot on the current head that skips the settle window; `@doppelwerk steven` and bare `@doppelwerk` mean review; an unknown command is refused with a reply.
+- [ ] DSV-4 with commands: Troy commanding Steven's reviewer runs on Steven's sign-in; it is refused when Steven wasn't requested on the PR.
 - [ ] A PR idle for 3 days loses its pod; a command recreates it on the current head.
 
 ## 3. Broker

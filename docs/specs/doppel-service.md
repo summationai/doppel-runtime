@@ -91,7 +91,7 @@ The ledger rows stay after the pod is gone, for dedupe across rounds and for lea
 | `pull_request` synchronize | Stop reviewers still running on the old head; queue the new head in the same pod. (Doppelwerk lets the run finish and throws the verdict away.) |
 | `pull_request` review_requested | Queue that person's doppel (Doppelwerk's main trigger) |
 | `pull_request` closed | Stop its reviewers, delete the pod and its checkouts, keep the ledger rows |
-| `issue_comment` with `@doppelwerk` | A command, with a guaranteed visible reply (Doppelwerk's `commands.py`). Brings back a pod that idled out. |
+| `issue_comment` with `@doppelwerk` | A command (see [Commands](#commands)), with a guaranteed visible reply. Brings back a pod that idled out. |
 | `pull_request_review_thread` resolved; replies to review comments | A person's disposition: drop the finding next round |
 | `check_suite` / `check_run` completed | Re-run the merger for that head |
 | `push` to the default branch | Refresh the rules and guides read from the base |
@@ -135,6 +135,7 @@ When a head moves: slots still running on the old head are stopped inside the po
 | --- | --- | --- |
 | A personal doppel (e.g. Steven's rubric) | Its owner's own credential | The user doing their own review work: the strongest case for "individual use" |
 | An app-wide reviewer (the repo's rules; Doppelwerk's `repo_owner` doppels) | The tenant's API key; failing that, a named owner who opts in | Belongs to no one person, so one member's subscription for everyone's PRs is the weakest case |
+| A command naming a personal reviewer | That reviewer's owner, never the commenter | The owner was requested on the PR, so the review is still their own work |
 
 No fallback onto another user's credential. Doppelwerk switches accounts when one runs out; in a multi-user service that is account sharing. When the gateway sees a usage-limit answer, it records the user's reset time, the scheduler sets `not_before` on that user's queued slots, and the PR says "out of capacity until <reset>". The only fallback is another engine the same user has connected.
 
@@ -165,6 +166,27 @@ A finding stays open across heads until the same reviewer's latest verdict no lo
 
 The merger posts a formal review only when its decision changes: APPROVE when `approved`, a COMMENT when `blocked`, never REQUEST_CHANGES. The status comment always shows the current state, e.g. "steven ✓ · troy ✓ · repo-owner running · CI pending · 1 open P1 from troy". A push dismisses the approval and starts again at step 1 on the new head.
 
+### Commands
+
+`@doppelwerk <command> [reviewers…] [description]`. After the command come zero or more reviewer names; the first word that isn't a known reviewer starts the description.
+
+| Comment | command | targets | description |
+| --- | --- | --- | --- |
+| `@doppelwerk review` | review | every reviewer on the PR | — |
+| `@doppelwerk review steven look at the retry cap` | review | steven | look at the retry cap |
+| `@doppelwerk review steven troy is the backoff right?` | review | steven, troy | is the backoff right? |
+| `@doppelwerk steven` | review | steven | — (Doppelwerk's form: a reviewer's name first means `review`) |
+| `@doppelwerk` | review | every reviewer on the PR | — |
+| `@doppelwerk help` | help | — | — |
+| `@doppelwerk deploy it` | refused | — | — (the reply lists the commands) |
+
+- **`review`** queues one slot per target on the PR's current head, with `reason = command` and `command_id` = the comment's id, so it is a run apart from the automatic review of that head. The harness hands the description to that reviewer in `/job` as its focus. Command slots skip the settle window but keep the payer's cap and usage window. A command on a PR whose pod idled out brings the pod back.
+- **Who pays:** a personal reviewer runs on its owner's sign-in, never the commenter's. A command may name a personal reviewer only when its owner is a requested reviewer on the PR (or its review already ran there); otherwise it is refused with a reply saying to request that person first. Troy's `@doppelwerk review steven …` on a PR that requested Steven runs on Steven's sign-in.
+- **Who may command:** org insiders only (Doppelwerk's author-association rule). The description is capped in length.
+- **Every command gets a visible answer:** a posted review per target, or a reply saying why not. `command_responses` holds one row per target; the command is `responded` once every target has answered, and one stuck in `received` too long gets a failure reply.
+- **The merger** counts a command review like any other: it is that reviewer's latest verdict on the current head.
+- `help` replies with the grammar. Later, on evidence: `status` (re-post the merger's status) and `stop` (stop running reviewers).
+
 ### Ledger schema (SQLite, WAL)
 
 ```sql
@@ -194,7 +216,7 @@ merges (pr_id, head_sha,
 PRIMARY KEY (pr_id, head_sha)
 ```
 
-Plus Doppelwerk's commands, findings, anchors and posts tables, keyed by tenant and PR, and `dispositions` (a person's response to a finding). A slot's posted review lives in `posts`. WAL mode is fine on the Linux VM's own disk; Doppelwerk's WAL trouble came from summini's virtiofs mount.
+`commands` holds each parsed command: `comment_id` (the key: acted on once), `author`, `command`, `targets`, `description`, the raw `body`, and a `state` that ends `responded` or `refused`. Plus Doppelwerk's findings, anchors and posts tables, keyed by tenant and PR, and `dispositions` (a person's response to a finding). A slot's posted review lives in `posts`. WAL mode is fine on the Linux VM's own disk; Doppelwerk's WAL trouble came from summini's virtiofs mount.
 
 ### Finishing a slot
 
@@ -324,7 +346,7 @@ Each rule needs a test or a run that proves it, with its ID in the test name.
 - **DSV-1:** Tenants, users, apps and rules are the BFF's records. The runtime reads them through the BFF's API, or receives them pushed. It keeps only its own state: PRs, slots, verdicts, findings, posts, and credentials with their status. It reports credential status changes back to the BFF.
 - **DSV-2:** A repo is reviewed only once its organization has installed the doppelwerk GitHub App on it and a tenant owner has chosen it in the UI. Every GitHub call uses that installation's token, minted by the runtime and reused until shortly before it expires (an hour at most), never another tenant's.
 - **DSV-3:** A user connects a subscription only through the provider's own sign-in flow. We never ask for a password or a pasted subscription token, and never show one back. An API key may be pasted; it goes to OpenBao and is shown back only as its last four characters.
-- **DSV-4:** A user's credential runs only reviewers that user owns, or app-wide reviewers they opted in to. It is never a fallback for anyone else's.
+- **DSV-4:** A user's credential runs only reviewers that user owns, or app-wide reviewers they opted in to. It is never a fallback for anyone else's. A command never changes the payer: a personal reviewer runs on its owner's sign-in, and only on PRs where its owner was requested.
 - **DSV-5:** Each PR has one pod, which holds every reviewer for that PR. It is deleted when the PR merges or closes, or after 3 days with no review; an `@doppelwerk` mention brings it back on the current head. Each head's code is checked out at run time from the runtime's mirror and mounted read-only. The image holds nothing per PR, repo, user or rule.
 - **DSV-6:** The pod holds no GitHub credential and can't reach GitHub. Its only output is one verdict file per reviewer in `/out/`. The runtime validates each against the verdict schema and posts it.
 - **DSV-7:** The review is static. Nothing from the PR is installed, built or run, and the engines get read-only tools.
