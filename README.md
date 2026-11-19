@@ -12,7 +12,7 @@ One process with five roles:
 | --- | --- |
 | Intake | GitHub events in (webhooks via the BFF, plus a reconcile poll) |
 | Scheduler | Matches each reviewer slot to its PR's pod once its conditions hold (settle, payer cap, usage window, host cap); runs each PR's merger, the only thing that approves |
-| Broker | Keeps a Codex home per user; refreshes under a per-user lock; durable copy in OpenBao |
+| Broker | Keeps a Codex home per user at `<data_dir>/tenants/<tenant>/<user>/codex/`; refreshes under a per-user lock |
 | Gateway | Swaps the assigned user's token into model calls; the only GitHub writer |
 | Sandbox manager | One gVisor pod per PR, with a read-only checkout per head from a mirror per repo |
 
@@ -28,7 +28,7 @@ src/
     doppel_control_plane/core/     pure decisions: command parsing, payer choice, slot matching, the merger
     doppel_control_plane/store/    the ledger and its schema
   gateway/          doppel_gateway          the one door out of a pod: the model route; later GitHub posting
-  model-provider/   doppel_model_provider   the broker: each payer's sign-in, refresh, OpenBao copy
+  model-provider/   doppel_model_provider   the broker: each payer's sign-in and refresh
   sandbox-runtime/  doppel_sandbox          what runs inside a pod: harness and image (checkpoint 5)
   shared/           doppel_shared           contracts between them: types, ports, fakes for tests
 tests/              cross-component: the architecture test, Docker integration tests

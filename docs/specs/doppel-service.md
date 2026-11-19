@@ -10,7 +10,7 @@ This repo is the **doppel runtime**: the one place where work happens and secret
 ## 1. Decisions
 
 1. **The POC is Codex only.** Claude waits for Anthropic's answer (see [section 12](#12-vendor-terms)).
-2. **Each user's Codex sign-in lives in its own Codex home, held by the runtime's broker.** It outlives every pod. OpenBao keeps a durable copy.
+2. **Each user's Codex sign-in lives in its own Codex home, held by the runtime's broker.** It outlives every pod. For now it lives only on the runtime's disk, at `<data_dir>/tenants/<tenant>/<user>/codex/`; a durable copy in OpenBao comes later.
 3. **Pods are user-agnostic.** They run the Codex SDK with the gateway as model provider. The scheduler picks whose sign-in pays for each reviewer by minting that run's capability.
 4. **One pod per PR.** It holds every reviewer for that PR, across every head. It is deleted when the PR merges or closes, or after 3 days with no review. An `@doppelwerk` mention brings it back on the current head.
 5. **The runtime tracks each PR's current head and every review it posted.** A pod keeps nothing that has to outlive it.
@@ -302,7 +302,7 @@ steven-universe's broker, made per user:
 1. The user starts the connection in the UI.
 2. The runtime runs Codex's device-code sign-in in a Codex home that is theirs (`codex login --device-auth`, or the SDK's `login_chatgpt_device_code`).
 3. The user enters the code on OpenAI's page. No code passes through us.
-4. The resulting `auth.json` lives in OpenBao under `kv/users/<user>/codex`, readable only by the broker's role.
+4. The resulting `auth.json` lives in that home, `<data_dir>/tenants/<tenant>/<user>/codex/auth.json`, owner-only. A payer id is `<tenant>/<user>`.
 5. The broker refreshes it under a lock per user. Refresh tokens rotate, so two refreshers break the sign-in. The broker drives refresh: no model call runs in the broker's Codex home, so Codex never refreshes there "on use".
 6. Each pod gets a capability per reviewer plus the gateway URL.
 7. The gateway maps capability → user → that user's token and swaps it in.
@@ -364,7 +364,7 @@ Each rule needs a test or a run that proves it, with its ID in the test name.
 - **DSV-10:** A new head stops that PR's reviewers still running on the old head and schedules the new head in the same pod. A merged or closed PR stops its reviewers and deletes its pod and checkouts. A head's checkout is deleted once no slot uses it.
 - **DSV-11:** Verdicts and posting keep Doppelwerk's contract: P0 to P3 findings; one grouped COMMENT review per reviewer per head. Reviewers never approve. Only the PR's merger approves, and only when every required reviewer has a verdict on the current head, none of them `stood_down`, CI is green, and no P0 or P1 from any reviewer is open after dispositions. A blocked merger posts a COMMENT, never REQUEST_CHANGES. A new head dismisses the merger's approval.
 - **DSV-12:** Each user has a concurrency cap, starting at 2. When a provider reports a usage-window limit, that user's slots wait until the reset, and the PR says so.
-- **DSV-13:** Tenants and users stay apart: the ledger is keyed by tenant; each user has their own OpenBao path and policy; every capability in a pod names a user of that pod's tenant; a verdict is scanned for credential-shaped strings before it is posted.
+- **DSV-13:** Tenants and users stay apart: the ledger is keyed by tenant; each user has their own Codex home under their tenant's folder, and a payer id can't reach outside it; every capability in a pod names a user of that pod's tenant; a verdict is scanned for credential-shaped strings before it is posted.
 - **DSV-14:** The runtime holds each PR's current head and every review it posted. A pod keeps nothing that has to outlive it, so deleting one loses no history.
 
 ## 10. Risks
@@ -380,7 +380,7 @@ Each rule needs a test or a run that proves it, with its ID in the test name.
 ### Build order
 
 1. Repo skeleton: one runtime process with its five roles, and a ledger keyed by tenant.
-2. The broker per user: device-code sign-in, refresh under a per-user lock, a durable copy in OpenBao at `kv/users/<user>/codex`.
+2. The broker per user: device-code sign-in, refresh under a per-user lock, the sign-in kept at `<data_dir>/tenants/<tenant>/<user>/codex/`.
 3. The gateway: capability → user → token, model calls passed through with usage counted, posting route on a separate listener.
 4. The sandbox image and harness, plus the pod per PR with a read-only checkout per head from the mirror.
 5. Intake by polling, the matching scheduler and the merger, and posting through a new doppelwerk-dev GitHub App with Doppelwerk's verdict schema.
@@ -422,7 +422,7 @@ None of this is proven yet. Each step needs a run seen working before it's claim
 
 - Warm sandbox pools (steven-universe claims a warm pod in 26 ms).
 - A container per user's Codex home, if the broker process itself becomes the threat.
-- Auto-unseal for OpenBao.
+- A durable copy of each sign-in in OpenBao (a path and policy per user, scoped tokens per operation), with auto-unseal. Built and tested once, then left out for simplicity; it's in git history.
 - Webhook-only intake, once a month of reconcile polls has found nothing missed.
 - Moving Summation's own Doppelwerk reviews onto the service, after a shadow period. This is the end goal.
 
