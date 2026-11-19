@@ -10,7 +10,7 @@ This repo is the **doppel runtime**: the one place where work happens and secret
 ## 1. Decisions
 
 1. **The POC is Codex only.** Claude waits for Anthropic's answer (see [section 12](#12-vendor-terms)).
-2. **Each user's Codex sign-in lives in its own Codex home, held by the runtime's broker.** It outlives every pod. For now it lives only on the runtime's disk, at `<data_dir>/tenants/<tenant>/<user>/codex/`; a durable copy in OpenBao comes later.
+2. **Each user's Codex sign-in lives in its own Codex home, held by the runtime's broker.** It outlives every pod. **Temporary:** for now it lives only on the runtime's disk, at `<data_dir>/tenants/<tenant>/<user>/codex/`; it moves to a secret manager (OpenBao) later.
 3. **Pods are user-agnostic.** They run the Codex SDK with the gateway as model provider. The scheduler picks whose sign-in pays for each reviewer by minting that run's capability.
 4. **One pod per PR.** It holds every reviewer for that PR, across every head. It is deleted when the PR merges or closes, or after 3 days with no review. An `@doppelwerk` mention brings it back on the current head.
 5. **The runtime tracks each PR's current head and every review it posted.** A pod keeps nothing that has to outlive it.
@@ -303,6 +303,11 @@ steven-universe's broker, made per user:
 2. The runtime runs Codex's device-code sign-in in a Codex home that is theirs (`codex login --device-auth`, or the SDK's `login_chatgpt_device_code`).
 3. The user enters the code on OpenAI's page. No code passes through us.
 4. The resulting `auth.json` lives in that home, `<data_dir>/tenants/<tenant>/<user>/codex/auth.json`, owner-only. A payer id is `<tenant>/<user>`.
+
+   **This store is temporary.** The disk is the only copy of every sign-in until it moves to a secret manager (OpenBao: a path and policy per user, a scoped token per operation; built once, in git history). Until then:
+   - the broker runs inside the runtime process, one for all payers; each payer has a folder, not a container;
+   - `<data_dir>` must be a persistent volume mounted into the runtime's container, never the container's own writable layer, or a rebuilt container loses every sign-in;
+   - `<data_dir>/tenants` is backed up, and never mounted into a PR's pod.
 5. The broker refreshes it under a lock per user. Refresh tokens rotate, so two refreshers break the sign-in. The broker drives refresh: no model call runs in the broker's Codex home, so Codex never refreshes there "on use".
 6. Each pod gets a capability per reviewer plus the gateway URL.
 7. The gateway maps capability → user → that user's token and swaps it in.
