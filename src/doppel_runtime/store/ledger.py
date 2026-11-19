@@ -146,6 +146,18 @@ class Ledger:
                 (now(), slot_id),
             )
 
+    def record_usage_reset(self, payer: str, reset_at: datetime) -> None:
+        """A payer hit their usage window: their slots wait until `reset_at` (DSV-12)."""
+        self.execute(
+            "INSERT INTO usage_resets (payer, reset_at) VALUES (?,?) "
+            "ON CONFLICT(payer) DO UPDATE SET reset_at=excluded.reset_at",
+            (payer, iso(reset_at)),
+        )
+
+    def add_tokens(self, slot_id: int, tokens: int) -> None:
+        if tokens:
+            self.execute("UPDATE slots SET tokens_used = tokens_used + ? WHERE id=?", (tokens, slot_id))
+
     def requeue_running(self) -> int:
         """At startup: slots left `running` by a crash go back to `queued`. Returns how many."""
         with self.tx() as db:

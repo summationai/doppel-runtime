@@ -250,11 +250,7 @@ class Scheduler:
 
     def usage_limit(self, payer: str, reset_at: datetime) -> None:
         """The gateway saw a usage-limit answer: that payer's slots wait until the reset (DSV-12)."""
-        self.ledger.execute(
-            "INSERT INTO usage_resets (payer, reset_at) VALUES (?,?) "
-            "ON CONFLICT(payer) DO UPDATE SET reset_at=excluded.reset_at",
-            (payer, iso(reset_at)),
-        )
+        self.ledger.record_usage_reset(payer, reset_at)
 
     # ---- commands ----------------------------------------------------------------------------------
 

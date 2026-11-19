@@ -146,5 +146,11 @@ CREATE TABLE dispositions (
 );
 """
 
-MIGRATIONS = {1: V1}
+# Checkpoint 4: the gateway counts each run's tokens against its budget.
+V2 = """
+ALTER TABLE slots ADD COLUMN tokens_used INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE slots ADD COLUMN token_budget INTEGER;  -- null: the gateway's default
+"""
+
+MIGRATIONS = {1: V1, 2: V2}
 SCHEMA_VERSION = max(MIGRATIONS)

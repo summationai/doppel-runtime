@@ -15,6 +15,8 @@ from aiohttp import web
 from doppel_runtime import __version__
 from doppel_runtime.config import LISTENERS, Config
 from doppel_runtime.roles import Role, make_roles
+from doppel_runtime.roles.broker import CodexHomes
+from doppel_runtime.roles.gateway import MODEL_MAX_BYTES, Gateway
 from doppel_runtime.store import Ledger
 
 log = logging.getLogger("doppel_runtime")
@@ -27,9 +29,11 @@ class Runtime:
         self.roles: dict[str, Role] = {}
         self._runners: list[web.AppRunner] = []
         self.bound: dict[str, tuple[str, int]] = {}  # listener -> (host, port) actually bound
+        self.gateway: Gateway | None = None
 
     def _app(self, listener: str) -> web.Application:
-        app = web.Application()
+        # One model request carries the whole context; nothing else needs more than the default.
+        app = web.Application(client_max_size=MODEL_MAX_BYTES if listener == "model" else 1024**2)
 
         async def healthz(_: web.Request) -> web.Response:
             return web.json_response(
@@ -42,6 +46,8 @@ class Runtime:
             )
 
         app.router.add_get("/healthz", healthz)
+        if listener == "model" and self.gateway is not None:  # pods reach this listener, and only this one
+            self.gateway.add_routes(app)
         return app
 
     async def start(self) -> None:
@@ -51,6 +57,7 @@ class Runtime:
         if requeued:
             log.info("requeued %d slot(s) left running by the last process", requeued)
         self.roles = make_roles(self.ledger)
+        self.gateway = Gateway(self.ledger, CodexHomes(self.config.homes_dir, self.config.codex_homes))
         for role in self.roles.values():
             await role.start()
         for name in LISTENERS:

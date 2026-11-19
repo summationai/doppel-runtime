@@ -100,3 +100,16 @@ def test_states_outside_the_schema_are_refused(ledger):
 def test_a_slot_needs_its_pr(ledger):
     with pytest.raises(sqlite3.IntegrityError):
         ledger.queue_slot(999, "aaa", "steven", "review_requested")
+
+
+def test_a_version_1_ledger_migrates_to_the_current_version(tmp_path):
+    from doppel_runtime.store.schema import V1
+
+    db = sqlite3.connect(tmp_path / "old.db", isolation_level=None)
+    db.executescript(f"BEGIN; {V1} PRAGMA user_version=1; COMMIT;")
+    db.close()
+    led = Ledger(tmp_path / "old.db")
+    assert led.schema_version == SCHEMA_VERSION == 2
+    cols = {r[1] for r in led._db.execute("PRAGMA table_info(slots)")}
+    assert {"tokens_used", "token_budget"} <= cols
+    led.close()

@@ -16,6 +16,9 @@ No secret belongs in the file. Secrets live in OpenBao and reach the runtime thr
     host = "127.0.0.1"
     port = 8702
 
+    [broker.homes]                        # a payer's Codex home, when not <data_dir>/homes/<payer>
+    "u-steven" = "/Users/steven/.codex"
+
 Environment overrides: `DOPPEL_DATA_DIR`, and `DOPPEL_<LISTENER>_HOST` / `DOPPEL_<LISTENER>_PORT`
 (e.g. `DOPPEL_MODEL_PORT=0` for an ephemeral port in tests).
 """
@@ -41,10 +44,15 @@ class Listener:
 class Config:
     data_dir: Path
     listeners: dict[str, Listener] = field(default_factory=dict)
+    codex_homes: dict[str, Path] = field(default_factory=dict)
 
     @property
     def ledger_path(self) -> Path:
         return self.data_dir / "ledger.db"
+
+    @property
+    def homes_dir(self) -> Path:
+        return self.data_dir / "homes"
 
 
 def load(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
@@ -63,4 +71,5 @@ def load(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
         listeners[name] = Listener(
             host=host, port=int(port if port is not None else section.get("port", DEFAULT_PORTS[name]))
         )
-    return Config(data_dir=data_dir, listeners=listeners)
+    homes = {payer: Path(p).expanduser() for payer, p in raw.get("broker", {}).get("homes", {}).items()}
+    return Config(data_dir=data_dir, listeners=listeners, codex_homes=homes)
