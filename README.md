@@ -57,6 +57,7 @@ Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [s
 ## Docs
 
 - [docs/specs/doppel-service.md](docs/specs/doppel-service.md): the spec. Decisions, scheduler, sandbox, credentials, rules (DSV-1 to DSV-14), the Friday demo and open questions.
+- [docs/reviews/](docs/reviews/): review findings and what we decided to do with each.
 
 Specs in `docs/specs/` are the source of truth. Shared docs elsewhere are handoff copies.
 

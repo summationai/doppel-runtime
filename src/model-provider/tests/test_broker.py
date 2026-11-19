@@ -11,8 +11,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 from doppel_model_provider import api
 from doppel_model_provider.broker import Broker
+from doppel_model_provider.codex_account import DeviceLogin
 from doppel_model_provider.codex_homes import CodexHomes
-from doppel_model_provider.codex_sdk import DeviceLogin
 from doppel_shared.ports.credentials import NotSignedIn
 
 NOW = datetime(2026, 11, 20, 10, 0, tzinfo=UTC)

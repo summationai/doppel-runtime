@@ -25,8 +25,8 @@ from typing import Any
 
 from doppel_shared.ports.credentials import Credential, NotSignedIn
 
+from doppel_model_provider.codex_account import Account
 from doppel_model_provider.codex_homes import CodexHomes, last_refresh, split_payer
-from doppel_model_provider.codex_sdk import Account
 
 log = logging.getLogger(__name__)
 
