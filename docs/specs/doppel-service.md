@@ -125,7 +125,7 @@ A queued slot starts when all of these hold:
 | Host cap | Summini is under its cap on running reviewers (about 10). |
 | Payer has a sign-in | Otherwise the slot is `blocked`; the BFF shows "connect Codex" and the PR says so once. |
 
-When a slot starts: the PR gets a pod if it has none, the scheduler mints a capability (PR, slot, reviewer, payer, expiry, token budget) and stores only its hash, and the harness starts that reviewer's thread.
+When a slot starts: the PR gets a pod if it has none, the scheduler mints a capability (PR, slot, reviewer, payer, expiry, token budget) and stores only its hash, and the harness starts that reviewer's Codex process.
 
 When a head moves: slots still running on the old head are stopped inside the pod; queued slots on the old head are dropped and re-queued on the new head. The pod stays.
 
@@ -190,7 +190,7 @@ One generic image, built per engine release. Nothing about a PR, repo, user or r
 | Debian slim, non-root, read-only root filesystem | Each head's checkout under `/work/<head>`, read-only |
 | git, ripgrep, jq, ca-certificates | `/job`: PR metadata, GitHub's diff, CI annotations, each doppel's `SKILL.md`, `scopes.yaml` and `watchouts/`, the app's rules |
 | A pinned Codex SDK and its `codex` binary, using the gateway as model provider, no sign-in of its own | One capability per reviewer run, never a token |
-| A small harness: read `/job`, run one SDK thread per reviewer, validate each against `verdict.schema.json`, write `/out/<reviewer>.json`, stop a reviewer on request | A scratch folder per run, wiped when the run ends |
+| A small harness: read `/job`, run one Codex process per reviewer run, validate each against `verdict.schema.json`, write `/out/<reviewer>.json`, stop a reviewer on request | A scratch folder per run, wiped when the run ends |
 
 Never in the pod: repo toolchains, `node_modules`, anything from the PR that would run, `gh` or any GitHub token. The pod never talks to GitHub.
 
@@ -203,7 +203,7 @@ The SDK runs in the pod; the sign-in stays outside it. steven-universe's working
 "model_providers.gateway.requires_openai_auth": False,
 ```
 
-`env_key` is read from the process environment. If SDK threads in one `codex app-server` can't carry different capabilities, run one Codex process per reviewer inside the pod (open question 3).
+One Codex process serves one provider, so it carries one capability ([spike 0a](../spikes/codex-sdk.md)). The harness starts a Codex process for each reviewer run, with that run's capability in its environment, and closes it when the run ends. An idle pod runs no Codex process.
 
 ### Getting the PR in
 
@@ -211,7 +211,7 @@ The SDK runs in the pod; the sign-in stays outside it. steven-universe's working
 - For each new head it fetches `refs/pull/<n>/head` and writes a checkout of that exact head into its own folder. `git archive <head> | tar -x` keeps `.git` out of the pod; Doppelwerk uses `git worktree add --detach`.
 - The PR's pod mounts one read-only parent folder with a folder per head. A new head shows up without remounting, and one checkout serves every reviewer on that head. A head's folder is deleted once no slot uses it.
 - Rules, guides and repo context are read from the **base** ref, never the head, so a PR can't rewrite the rules that judge it.
-- The head's own `AGENTS.md` must not load as instructions. Codex reads `AGENTS.md` from its working directory. Candidate setting: `project_doc_max_bytes = 0` (unverified). Also check that a repo-level `.codex/` config can't load.
+- The head's own `AGENTS.md` must not load as instructions. Codex reads `AGENTS.md` from its working directory; `project_doc_max_bytes = 0` keeps it out, and a repo-level `.codex/config.toml` doesn't load ([spike 0c](../spikes/codex-sdk.md)).
 - Reviewers see the whole repo, not just the diff, so they can open callers, read tests and grep. Doppelwerk already works this way.
 - The review is static. Doppelwerk gives Claude `--allowedTools Read,Grep,Glob` and Codex `--sandbox read-only`. Its only window into execution is CI's results, read through the API. Running the PR is Crew's verifier's job.
 
@@ -223,8 +223,8 @@ The SDK runs in the pod; the sign-in stays outside it. steven-universe's working
 | New push | Kill the run; start a new pod | Add the new head's checkout; stop reviewers on the old head |
 | CI wait | Reviewers that wait for CI need a second pod | Reviewers join the same pod when their CI is done |
 | What a PR leaves behind | Nothing | Stays for that PR's next run, kept small by a read-only root and a per-run scratch folder |
-| Idle cost | None | A pod per open PR; an idle pod should run no Codex process |
-| Cancel | Delete the pod | Stop one reviewer's thread |
+| Idle cost | None | A pod per open PR; an idle pod runs no Codex process |
+| Cancel | Delete the pod | Interrupt one reviewer's turn and close its Codex process |
 | On EKS later | A Job per run | A pod per open PR, with the mirror as a cache volume |
 
 ## 7. Credentials
@@ -245,14 +245,14 @@ Device-code sign-in has to be switched on in the user's ChatGPT security setting
 
 What the sign-in is: OAuth 2.0, no key pairs. Browser sign-in with PKCE redirecting to `localhost:1455`, or device code on a headless machine. `auth.json` holds:
 
-- `id_token`: a JWT naming the account and plan;
-- `access_token`: a bearer token valid about an hour;
+- `id_token`: a JWT naming the account and plan, valid an hour;
+- `access_token`: the bearer token model calls use, valid about 10 days;
 - `refresh_token`: good for about 30 days;
 - `account_id` and `last_refresh`.
 
 A model call sends `Authorization: Bearer <access_token>` with a `chatgpt-account-id` header to `chatgpt.com/backend-api/codex`. Refresh trades the refresh token for a new pair and the old refresh token stops working. API-key mode holds a static key with nothing to refresh.
 
-steven-universe refreshes after 6 h, which doesn't square with an hour-long access token (open question 1).
+The broker refreshes once `last_refresh` is 6 h old, and the gateway refreshes once and retries on an upstream 401, as steven-universe does ([spike 0d](../spikes/codex-sdk.md)).
 
 ### API keys (either provider)
 
@@ -327,7 +327,7 @@ Each rule needs a test or a run that proves it, with its ID in the test name.
 - A new doppelwerk-dev GitHub App, installed on that repo only.
 - The runtime on summini, as its own user, in a Linux VM with Docker and gVisor, finding PRs by polling.
 - Each user connects Codex by device code; their sign-in lives in their own Codex home, held by the broker.
-- A PR gets one personal reviewer per user and one app-wide reviewer, as SDK threads in the PR's one pod, each on its own payer's sign-in through the gateway.
+- A PR gets one personal reviewer per user and one app-wide reviewer, as Codex processes in the PR's one pod, each on its own payer's sign-in through the gateway.
 - Reviews post as doppelwerk-dev[bot].
 - A push stops reviewers on the old head and starts the new head in the same pod; merging deletes the pod.
 - The UI shows each user's connection status and the app's run history.
@@ -392,11 +392,11 @@ Anthropic, through [contact sales](https://www.anthropic.com/contact-sales), bef
 
 ## 13. Open questions
 
-1. **Refresh timing.** The access token lasts about an hour, but steven-universe refreshes after 6 h. Does the gateway refresh on a 401, or should the broker refresh hourly?
-2. **Stopping one reviewer.** Can the Codex SDK interrupt a running thread inside the pod without restarting the pod?
-3. **Several capabilities in one Codex process.** Can SDK threads in one `codex app-server` carry different capabilities, or does each reviewer need its own process?
-4. **Idle pod cost.** Confirm an idle pod runs no Codex process, so summini's cap can count running reviewers rather than pods.
-5. **The head's `AGENTS.md`.** Which Codex setting keeps it out (candidate: `project_doc_max_bytes = 0`), and how do we feed in the base's instead (DSV-9)?
+1. ~~**Refresh timing.**~~ Answered: the access token lasts 10 days; refresh at 6 h and on a 401 ([spike 0d](../spikes/codex-sdk.md)).
+2. ~~**Stopping one reviewer.**~~ Answered: `interrupt()` ends one turn at once while others finish ([spike 0b](../spikes/codex-sdk.md)).
+3. ~~**Several capabilities in one Codex process.**~~ Answered: no; one Codex process per reviewer run ([spike 0a](../spikes/codex-sdk.md)).
+4. **Idle pod cost.** An idle pod runs no Codex process by design (spike 0a). Still to measure: one Codex process's memory, and an idle pod's, in checkpoint 5.
+5. **The head's `AGENTS.md`.** Kept out by `project_doc_max_bytes = 0` ([spike 0c](../spikes/codex-sdk.md)). Still open: how the base's rules and guides are fed in (DSV-9), likely as the reviewer's instructions from `/job`.
 6. **App-wide reviewers.** The tenant's API key, or an owner's opted-in subscription? For Friday there is no API key path yet, so whose sign-in pays?
 7. **The Linux VM on summini.** Colima, Lima, OrbStack or Docker Desktop, and does gVisor run in it on Apple silicon?
 8. **The GitHub App.** A new public App, or the existing App 4213368 (Summation only, with `contents: write`, more than a reviewer needs)?

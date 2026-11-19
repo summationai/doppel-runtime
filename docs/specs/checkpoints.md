@@ -31,6 +31,8 @@ Checkpoints 0 to 2 need nobody and nothing installed. Start there.
 
 ## 0. Spikes: the Codex unknowns
 
+**Done 2026-11-19.** Findings in [docs/spikes/codex-sdk.md](../spikes/codex-sdk.md): one Codex process per reviewer run; `interrupt()` stops one reviewer; `project_doc_max_bytes = 0` keeps `AGENTS.md` out; the access token lasts 10 days.
+
 Answer the open questions that decide the harness's shape before writing it. Each spike is a throwaway script under `spikes/` plus a short note in `docs/spikes/<name>.md`; the spec is updated with the answer.
 
 | Spike | Question | How | Done when |
