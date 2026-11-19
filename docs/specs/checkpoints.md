@@ -44,6 +44,8 @@ Answer the open questions that decide the harness's shape before writing it. Eac
 
 ## 1. Skeleton and ledger
 
+**Done 2026-11-19.** `doppel-runtime serve`, the ledger, crash recovery and CI; 14 tests.
+
 - `uv` project, package `doppel_runtime`, one process started by `doppel-runtime serve`.
 - Five role modules (`intake`, `scheduler`, `broker`, `gateway`, `sandbox`) wired in one asyncio process, with three listeners: the gateway's model route, an internal route (posting, broker, runtime API), and health.
 - The ledger: the `prs` and `slots` tables from the spec, plus Doppelwerk's commands, findings, posts and dispositions tables, all keyed by tenant. Migrations in code.
@@ -53,7 +55,7 @@ Done when:
 - [x] `doppel-runtime serve` starts and answers health on every listener.
 - [x] Inserting the same slot twice, including a non-command slot (`command_id = ''`), leaves one row.
 - [x] Killing the process with a slot `running` and restarting puts it back to `queued`.
-- [ ] CI runs `pytest` and a linter on every push.
+- [x] CI runs `pytest` and a linter on every push.
 
 ## 2. Scheduler: matching with fakes
 
