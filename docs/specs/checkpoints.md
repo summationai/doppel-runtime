@@ -18,7 +18,7 @@ As of 2026-11-19 (Thursday). "Friday" in the spec is 2026-11-20.
 | --- | --- | --- | --- | --- |
 | 0 | Spikes: the Codex unknowns | Laptop | — | Open questions 1, 2, 3, 5 |
 | 1 | Skeleton and ledger | Laptop | — | DSV-14 (schema), restart |
-| 2 | Scheduler, matching with fakes | Laptop | — | DSV-4, 10, 12 |
+| 2 | Scheduler and merger, with fakes | Laptop | — | DSV-4, 10, 11, 12 |
 | 3 | Broker | Laptop | Steven and Troy each sign in to Codex once | DSV-3, 13 |
 | 4 | Gateway | Laptop | — | DSV-8 |
 | 5 | Sandbox: image, harness, pod per PR | Laptop (runc) | — | DSV-5, 6, 7, 9 |
@@ -57,12 +57,13 @@ Done when:
 - [x] Killing the process with a slot `running` and restarting puts it back to `queued`.
 - [x] CI runs `pytest` and a linter on every push.
 
-## 2. Scheduler: matching with fakes
+## 2. Scheduler and merger, with fakes
 
 The matcher is a pure function, `ready_slots(ledger, now) -> list[Slot]`, plus event handlers that write slots. GitHub, Codex and Docker are faked.
 
 - Events: PR opened, review requested, synchronize, closed, command, CI done.
-- Conditions: settle (90 s, reset on each push), CI (approving reviewers only, 30 min cap), payer cap (2), usage window, host cap (10), payer has a sign-in (`blocked` if not).
+- Conditions: settle (90 s, reset on each push), payer cap (2), usage window, host cap (10), payer has a sign-in (`blocked` if not). Reviewers don't wait for CI.
+- The merger: a pure function of the PR's current head, its reviewers' verdicts, CI, findings and dispositions, giving `waiting_reviews`, `waiting_ci`, `blocked` or `approved`. Schema v2 adds `merges` and `prs.status_comment_id`, drops `ci` from `slots.waiting_on`, and moves the posted review id to `posts` only.
 - Head moves: running slots on the old head get a stop; queued ones move to the new head.
 - Pod lifecycle: created on the first ready slot, idle after its last slot, deleted after 3 days idle or on close; a command brings it back.
 - Who pays: personal → owner; app-wide → tenant key, else an opted-in owner; never anyone else.
@@ -71,7 +72,9 @@ Done when, as table-driven tests:
 - [ ] DSV-4: a slot never gets a payer other than its owner or an opted-in owner, even when that payer is capped or out of usage.
 - [ ] DSV-10: a push stops old-head slots and queues the new head in the same pod; close deletes the pod.
 - [ ] DSV-12: a third slot for one payer waits; a usage-limit reset holds that payer's slots until the reset.
-- [ ] A personal slot starts while an app-wide slot on the same head waits for CI.
+- [ ] Reviewers start without waiting for CI; CI only moves the merger.
+- [ ] DSV-11: the merger approves only with every required reviewer done on the current head, none stood down, CI green, and no open P0 or P1 from any reviewer; a personal reviewer's P1 blocks; a person resolving it unblocks with no model run; blocked posts a COMMENT; a push dismisses the approval.
+- [ ] The merger posts a formal review only when its decision changes.
 - [ ] A PR idle for 3 days loses its pod; a command recreates it on the current head.
 
 ## 3. Broker

@@ -11,7 +11,7 @@ One process with five roles:
 | Role | Job |
 | --- | --- |
 | Intake | GitHub events in (webhooks via the BFF, plus a reconcile poll) |
-| Scheduler | Matches each reviewer slot to its PR's pod once its conditions hold: CI, payer cap, usage window, host cap |
+| Scheduler | Matches each reviewer slot to its PR's pod once its conditions hold (settle, payer cap, usage window, host cap); runs each PR's merger, the only thing that approves |
 | Broker | Keeps a Codex home per user; refreshes under a per-user lock; durable copy in OpenBao |
 | Gateway | Swaps the assigned user's token into model calls; the only GitHub writer |
 | Sandbox manager | One gVisor pod per PR, with a read-only checkout per head from a mirror per repo |

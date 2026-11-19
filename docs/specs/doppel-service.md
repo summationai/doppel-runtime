@@ -15,9 +15,10 @@ This repo is the **doppel runtime**: the one place where work happens and secret
 4. **One pod per PR.** It holds every reviewer for that PR, across every head. It is deleted when the PR merges or closes, or after 3 days with no review. An `@doppelwerk` mention brings it back on the current head.
 5. **The runtime tracks each PR's current head and every review it posted.** A pod keeps nothing that has to outlive it.
 6. **Static review only.** Nothing from the PR is installed, built or run.
-7. **One process with five roles:** intake, scheduler, broker, gateway, sandbox manager.
-8. **It runs on summini**, as its own macOS user, in a Linux VM with Docker and gVisor. For Friday it finds PRs by polling.
-9. **Records** (tenants, users, apps, rules) belong to the BFF. **Secrets, sandboxes and GitHub writes** belong to the runtime.
+7. **Reviewers comment; one merger per PR approves.** Each reviewer posts its static review as soon as it finishes, without waiting for CI. The merger is plain code, not a model: it decides the PR's approval once every required reviewer has finished on the current head and CI is green.
+8. **One process with five roles:** intake, scheduler, broker, gateway, sandbox manager.
+9. **It runs on summini**, as its own macOS user, in a Linux VM with Docker and gVisor. For Friday it finds PRs by polling.
+10. **Records** (tenants, users, apps, rules) belong to the BFF. **Secrets, sandboxes and GitHub writes** belong to the runtime.
 
 ## 2. What belongs where
 
@@ -92,7 +93,7 @@ The ledger rows stay after the pod is gone, for dedupe across rounds and for lea
 | `pull_request` closed | Stop its reviewers, delete the pod and its checkouts, keep the ledger rows |
 | `issue_comment` with `@doppelwerk` | A command, with a guaranteed visible reply (Doppelwerk's `commands.py`). Brings back a pod that idled out. |
 | `pull_request_review_thread` resolved; replies to review comments | A person's disposition: drop the finding next round |
-| `check_suite` / `check_run` completed | Release slots waiting on CI. Doppelwerk waits up to 30 min for code doppels. |
+| `check_suite` / `check_run` completed | Re-run the merger for that head |
 | `push` to the default branch | Refresh the rules and guides read from the base |
 
 ## 5. The scheduler: one matching system
@@ -114,12 +115,11 @@ One loop in `daemon.py` runs every 60 s (`src/doppelwerk/` on `origin/main`):
 
 ### Slot conditions
 
-A queued slot starts when all of these hold:
+A queued slot starts when all of these hold. None of them is CI: reviewers don't wait for it; the merger does.
 
 | Condition | Rule |
 | --- | --- |
 | Settled | A push sets the PR's slots' `not_before` 90 s out; each further push resets it. Doppelwerk's settle rule, applied from the first push. |
-| CI | Reviewers that can approve wait for CI on their head, up to 30 min. Personal reviewers don't wait. |
 | Payer cap | The payer has fewer than 2 running slots. |
 | Usage window | The payer isn't waiting out a usage-limit reset. |
 | Host cap | Summini is under its cap on running reviewers (about 10). |
@@ -138,6 +138,33 @@ When a head moves: slots still running on the old head are stopped inside the po
 
 No fallback onto another user's credential. Doppelwerk switches accounts when one runs out; in a multi-user service that is account sharing. When the gateway sees a usage-limit answer, it records the user's reset time, the scheduler sets `not_before` on that user's queued slots, and the PR says "out of capacity until <reset>". The only fallback is another engine the same user has connected.
 
+### The merger: one approval per PR
+
+Reviewers comment; the merger approves. It is part of the scheduler role: plain code that spends no tokens, has no payer, and runs again on every event that could change its answer (a reviewer finishes, CI completes, a person resolves or answers a finding, a push).
+
+| | Reviewers (per head) | Merger (per PR) |
+| --- | --- | --- |
+| Job | Static review of one head | Decide the PR's approval |
+| Runs a model? | Yes: one Codex process, one payer | No: Doppelwerk's `criticality.decide`, grown into a gate |
+| In the ledger | A slot | A `merges` row per (PR, head) |
+| Waits for CI? | No | Yes: CI is one of its inputs |
+| Posts | A COMMENT review with inline findings, as soon as it finishes | Its decision, and a status comment it edits in place |
+| Can approve? | Never | The only one that can |
+
+Every post comes from one GitHub identity, so several approving reviewers would only be the same bot approving several times. One merger gives one approval, at the moment it can be trusted.
+
+For the PR's current head, in order:
+
+1. **Every required reviewer has a verdict on this head?** If not: `waiting_reviews`. Required reviewers are the app's (from its rules); personal reviewers aren't required, so a slow or out-of-usage one can't hold the PR up. A verdict from an older head doesn't count.
+2. **A required reviewer `stood_down`** (the PR was too large or not reviewable)? `blocked`: a person has to review it.
+3. **CI finished and green?** If not: `waiting_ci`. Red: `blocked`, and the status comment says so.
+4. **Any open P0 or P1, from any reviewer, personal ones included?** `blocked`, listing them.
+5. Otherwise: `approved`.
+
+A finding stays open across heads until the same reviewer's latest verdict no longer raises it (matched through `finding_anchors.line_context`, which survives moved lines) or a person resolves or answers it (`dispositions`). A person resolving a blocking P1 can lead to an approval with no model run.
+
+The merger posts a formal review only when its decision changes: APPROVE when `approved`, a COMMENT when `blocked`, never REQUEST_CHANGES. The status comment always shows the current state, e.g. "steven ✓ · troy ✓ · repo-owner running · CI pending · 1 open P1 from troy". A push dismisses the approval and starts again at step 1 on the new head.
+
 ### Ledger schema (SQLite, WAL)
 
 ```sql
@@ -145,6 +172,7 @@ prs   (id, tenant, repo, pr,
        current_head,
        pod_id,            -- null while the PR has no pod
        last_review_at,    -- drives the 3-day idle cleanup
+       status_comment_id, -- the merger's status comment on the PR, edited in place
        state)             -- open | idle | merged | closed
 UNIQUE (tenant, repo, pr)
 
@@ -152,21 +180,28 @@ slots (id, pr_id, head_sha, reviewer, payer_user,
        reason,            -- review_requested | app | command
        command_id,        -- '' when not a command: SQLite treats NULLs as distinct
        state,             -- queued | blocked | running | posted | failed | skipped | cancelled
-       waiting_on,        -- settle | ci | payer_cap | usage_window, while queued
-       not_before,        -- end of the settle window, the CI deadline or the usage reset
-       attempts, capability_hash, verdict,
-       review_id)         -- the GitHub review it posted
+       waiting_on,        -- settle | payer_cap | usage_window, while queued
+       not_before,        -- end of the settle window or the usage reset
+       attempts, capability_hash,
+       verdict)           -- the reviewer's verdict file (Doppelwerk's verdict.schema.json)
 UNIQUE (pr_id, head_sha, reviewer, command_id)
+
+merges (pr_id, head_sha,
+       decision,          -- waiting_reviews | waiting_ci | blocked | approved | dismissed
+       reason,            -- what it waits on, or the blocking findings
+       review_id,         -- the formal review it posted, if any
+       decided_at)
+PRIMARY KEY (pr_id, head_sha)
 ```
 
-Plus Doppelwerk's commands, findings, posts and dispositions tables, keyed by tenant and PR. WAL mode is fine on the Linux VM's own disk; Doppelwerk's WAL trouble came from summini's virtiofs mount.
+Plus Doppelwerk's commands, findings, anchors and posts tables, keyed by tenant and PR, and `dispositions` (a person's response to a finding). A slot's posted review lives in `posts`. WAL mode is fine on the Linux VM's own disk; Doppelwerk's WAL trouble came from summini's virtiofs mount.
 
 ### Finishing a slot
 
 1. Validate the verdict file against `verdict.schema.json`.
 2. Scan it for credential-shaped strings.
-3. Run Doppelwerk's `criticality.decide` to choose APPROVE or COMMENT.
-4. Post through the gateway, record the `review_id` on the slot and the PR.
+3. Post it through the gateway as a COMMENT review with inline findings, and record it in `posts`. A reviewer never approves.
+4. Run the merger for that head.
 5. The pod stays for the PR's next head.
 
 On restart, running slots go back to queued. Each open PR's pod is kept if it is still up, or recreated for its next slot.
@@ -179,7 +214,7 @@ On restart, running slots go back to queued. Each open PR's pod is kept if it is
 | The poller's searches and checks | Choosing the payer | Fairness between tenants (the per-user cap keeps one person from taking every slot) |
 | The head-moved guard | Per-user caps and usage-limit waits | A separate queue service |
 | The command table with its guaranteed reply | Minting capabilities | |
-| `criticality.decide` | Stopping one reviewer inside a running pod; the pod's idle cleanup | |
+| `criticality.decide`, grown into the merger | Stopping one reviewer inside a running pod; the pod's idle cleanup | |
 
 ## 6. The PR sandbox
 
@@ -221,7 +256,7 @@ One Codex process serves one provider, so it carries one capability ([spike 0a](
 | --- | --- | --- |
 | Lives | One head's review: minutes | Until merge or close, or 3 days idle |
 | New push | Kill the run; start a new pod | Add the new head's checkout; stop reviewers on the old head |
-| CI wait | Reviewers that wait for CI need a second pod | Reviewers join the same pod when their CI is done |
+| Reviewers starting at different times | Each start needs a new pod | Reviewers join the same pod as their slots become ready |
 | What a PR leaves behind | Nothing | Stays for that PR's next run, kept small by a read-only root and a per-run scratch folder |
 | Idle cost | None | A pod per open PR; an idle pod runs no Codex process |
 | Cancel | Delete the pod | Interrupt one reviewer's turn and close its Codex process |
@@ -296,7 +331,7 @@ Each rule needs a test or a run that proves it, with its ID in the test name.
 - **DSV-8:** The pod's network reaches only the gateway's model route; every other destination is refused. The gateway's GitHub-posting route and the broker listen where pods can't reach them. Each reviewer's model calls carry a capability the scheduler minted for that run. It names one user, expires with the run, and has a token budget.
 - **DSV-9:** Rules, guides and repo context come from the PR's base ref, never its head. The head's own agent instruction files are not loaded as instructions.
 - **DSV-10:** A new head stops that PR's reviewers still running on the old head and schedules the new head in the same pod. A merged or closed PR stops its reviewers and deletes its pod and checkouts. A head's checkout is deleted once no slot uses it.
-- **DSV-11:** Verdicts and posting keep Doppelwerk's contract: P0 to P3 findings; one grouped review per reviewer per head; approval only by an app-wide reviewer, with CI green and no P0 or P1; personal reviewers only comment; stale approvals are dismissed on a new head.
+- **DSV-11:** Verdicts and posting keep Doppelwerk's contract: P0 to P3 findings; one grouped COMMENT review per reviewer per head. Reviewers never approve. Only the PR's merger approves, and only when every required reviewer has a verdict on the current head, none of them `stood_down`, CI is green, and no P0 or P1 from any reviewer is open after dispositions. A blocked merger posts a COMMENT, never REQUEST_CHANGES. A new head dismisses the merger's approval.
 - **DSV-12:** Each user has a concurrency cap, starting at 2. When a provider reports a usage-window limit, that user's slots wait until the reset, and the PR says so.
 - **DSV-13:** Tenants and users stay apart: the ledger is keyed by tenant; each user has their own OpenBao path and policy; every capability in a pod names a user of that pod's tenant; a verdict is scanned for credential-shaped strings before it is posted.
 - **DSV-14:** The runtime holds each PR's current head and every review it posted. A pod keeps nothing that has to outlive it, so deleting one loses no history.
@@ -317,7 +352,7 @@ Each rule needs a test or a run that proves it, with its ID in the test name.
 2. The broker per user: device-code sign-in, refresh under a per-user lock, a durable copy in OpenBao at `kv/users/<user>/codex`.
 3. The gateway: capability → user → token, model calls passed through with usage counted, posting route on a separate listener.
 4. The sandbox image and harness, plus the pod per PR with a read-only checkout per head from the mirror.
-5. Intake by polling, the matching scheduler, and posting through a new doppelwerk-dev GitHub App with Doppelwerk's verdict schema and criticality rules.
+5. Intake by polling, the matching scheduler and the merger, and posting through a new doppelwerk-dev GitHub App with Doppelwerk's verdict schema.
 6. The BFF contract with Troy: records in, credential status out.
 7. Stopping reviewers on a new head, the pod's idle cleanup, and waiting out a user's usage window.
 
@@ -329,6 +364,7 @@ Each rule needs a test or a run that proves it, with its ID in the test name.
 - Each user connects Codex by device code; their sign-in lives in their own Codex home, held by the broker.
 - A PR gets one personal reviewer per user and one app-wide reviewer, as Codex processes in the PR's one pod, each on its own payer's sign-in through the gateway.
 - Reviews post as doppelwerk-dev[bot].
+- The merger approves once CI is green and no P0 or P1 is open; a P1 from any reviewer blocks it with a COMMENT until fixed or resolved.
 - A push stops reviewers on the old head and starts the new head in the same pod; merging deletes the pod.
 - The UI shows each user's connection status and the app's run history.
 - Show the subscription path on Summation staff only, labelled an internal experiment. Show API keys as the path a customer would use.
