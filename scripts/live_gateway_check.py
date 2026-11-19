@@ -23,10 +23,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-from doppel_runtime.app import Runtime
-from doppel_runtime.config import Config, Listener
-from doppel_runtime.roles.gateway import capability_hash
-from doppel_runtime.store import now
+from doppel_control_plane.app import Runtime
+from doppel_control_plane.config import Config, Listener
+from doppel_control_plane.store import now
+from doppel_shared.capability import capability_hash
 
 PROMPT = "Reply with exactly the word: pong"
 

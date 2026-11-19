@@ -20,29 +20,39 @@ Pods never hold a token or reach GitHub. Records (tenants, users, apps, rules) l
 
 ## Layout
 
+One repo, a uv workspace with one package per component. `src/` is the architecture:
+
 ```
-src/doppel_runtime/
-  types/   plain data shared by every layer: dataclasses and enums
-  core/    pure decisions: command parsing, payer choice, slot matching, the merger
-  ports/   interfaces to the outside (Protocols): directory (BFF), sandbox, GitHub
-  store/   persistence: the ledger and its schema
-  roles/   the five roles: wire core + store + ports together and handle events
-  app.py, cli.py, config.py: the process
-tests/     mirrors the layers; tests/fakes.py stands in for the ports
+src/
+  control-plane/    doppel_control_plane    the runtime process: intake, scheduler, merger, ledger, app, cli
+    doppel_control_plane/core/     pure decisions: command parsing, payer choice, slot matching, the merger
+    doppel_control_plane/store/    the ledger and its schema
+  gateway/          doppel_gateway          the one door out of a pod: the model route; later GitHub posting
+  model-provider/   doppel_model_provider   the broker: each payer's sign-in, refresh, OpenBao copy
+  sandbox-runtime/  doppel_sandbox          what runs inside a pod: harness and image (checkpoint 5)
+  shared/           doppel_shared           contracts between them: types, ports, fakes for tests
+tests/              cross-component: the architecture test, Docker integration tests
 ```
 
-`types` imports nothing of ours; `core`, `ports` and `store` import only `types`; `roles` may import all four. [tests/test_layering.py](tests/test_layering.py) enforces it. Run the package with `python -m doppel_runtime` or `doppel-runtime`, never a file inside it: running from inside the package would put `types/` ahead of Python's own `types` module.
+| Component | May import |
+| --- | --- |
+| `shared` | nothing of ours |
+| `gateway`, `model-provider`, `sandbox-runtime` | `shared` |
+| `control-plane` | `shared`, `gateway`, `model-provider` (it runs them in-process) |
+
+Inside the control plane, `core` and `store` import only `shared`. Components talk through ports in `shared`: the gateway sees runs through `Runs` and sign-ins through `Credentials`, never the ledger or the broker's files. [tests/test_architecture.py](tests/test_architecture.py) enforces all of it, including that each component's pyproject declares what it imports. Each component keeps its own tests in `src/<component>/tests/`.
 
 ## Develop
 
 ```sh
-uv sync                       # Python 3.12+, deps and dev tools
+uv sync                       # Python 3.12+, every component, dev tools
 uv run pytest -q              # tests
-uv run ruff check . && uv run ruff format --check src tests
+uv run ruff check . && uv run ruff format --check src tests scripts
+DOPPEL_DOCKER_TESTS=1 uv run pytest tests/integration   # needs Docker
 uv run doppel-runtime serve   # listeners on 127.0.0.1:8700 (model), 8701 (internal), 8702 (health)
 ```
 
-Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [src/doppel_runtime/config.py](src/doppel_runtime/config.py). Progress is tracked in [docs/specs/checkpoints.md](docs/specs/checkpoints.md).
+Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [src/control-plane/doppel_control_plane/config.py](src/control-plane/doppel_control_plane/config.py). Progress is tracked in [docs/specs/checkpoints.md](docs/specs/checkpoints.md).
 
 ## Docs
 

@@ -1,0 +1,19 @@
+[project]
+name = "doppel-gateway"
+version = "0.1.0"
+description = "The gateway: the model route pods call, and later the only GitHub writer."
+requires-python = ">=3.12"
+dependencies = [
+    "doppel-shared",
+    "aiohttp>=3.10",
+]
+
+[tool.uv.sources]
+doppel-shared = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["doppel_gateway"]
