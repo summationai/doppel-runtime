@@ -8,7 +8,7 @@ from doppel_control_plane.core.matching import Limits
 from doppel_control_plane.intake import Budget, OutOfBudget, Poller, Watched
 from doppel_control_plane.scheduler import Scheduler
 from doppel_control_plane.store import Ledger
-from doppel_shared.testing import FakeDirectory, FakeGitHub, FakeGitHubHost, FakeSandbox, verdict
+from doppel_shared.testing import FakeDirectory, FakeGitHub, FakeGitHubHost, FakeSandbox, finding, verdict
 
 T0 = datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
 REPO = "summationai/billing"
@@ -76,6 +76,69 @@ async def test_a_request_added_later_or_removed(w):
     await w.poll(T0 + timedelta(minutes=2))
     assert ("steven", H1, "cancelled") in w.slots()
     assert w.ledger.rows("SELECT * FROM pr_reviewers WHERE source='requested'") == []
+
+
+def slot_of(w: World, reviewer: str, head: str) -> int:
+    return w.ledger.value("SELECT id FROM slots WHERE reviewer=? AND head_sha=?", (reviewer, head))
+
+
+async def test_a_persons_own_review_leaves_their_doppel_on_the_pr(w):
+    """Steven's doppel posts as doppelwerk, not as Steven: his own review changes nothing for it."""
+    w.host.open(REPO, 42, H1, requested=["stevenliu"])
+    await w.poll()
+    w.scheduler.tick(T0)
+    w.host.human_review(REPO, 42, "stevenliu")  # GitHub drops him from the requested list
+    w.host.calls.clear()
+    await w.poll(T0 + timedelta(minutes=1))
+    assert ("steven", H1, "running") in w.slots()  # not stopped
+    assert w.sandbox.stopped == []
+    assert f"reviews {REPO}#42 1" in w.host.calls  # one read, to tell a review from an un-request
+    w.host.calls.clear()
+    await w.poll(T0 + timedelta(minutes=2))
+    assert not any(c.startswith("reviews") for c in w.host.calls)  # once, not every cycle
+
+    w.host.push(REPO, 42, H2)  # and it reviews every new head
+    await w.poll(T0 + timedelta(minutes=3))
+    assert ("steven", H2, "queued") in w.slots()
+
+
+async def test_requested_again_after_reviewing_then_un_requested_removes_the_doppel(w):
+    w.host.open(REPO, 42, H1, requested=["stevenliu"])
+    await w.poll()
+    w.host.human_review(REPO, 42, "stevenliu")
+    await w.poll(T0 + timedelta(minutes=1))
+    w.host.request(REPO, 42, "stevenliu")
+    await w.poll(T0 + timedelta(minutes=2))
+    w.host.reviews.clear()  # (as if his earlier review were older than the new request)
+    w.host.unrequest(REPO, 42, "stevenliu")
+    await w.poll(T0 + timedelta(minutes=3))
+    assert ("steven", H1, "cancelled") in w.slots()
+
+
+async def test_a_doppels_p1_keeps_blocking_after_the_person_reviews_or_is_un_requested(w):
+    """The hole found in review: removing a doppel must never clear the P1 it already posted."""
+    w.host.open(REPO, 42, H1, requested=["stevenliu"])
+    await w.poll()
+    w.scheduler.tick(T0)
+    w.scheduler.verdict(slot_of(w, "repo-owner", H1), verdict("repo-owner", H1), T0)
+    w.scheduler.verdict(slot_of(w, "steven", H1),
+                        verdict("steven", H1, "changes_requested", [finding("F1", "P1")]), T0)  # fmt: skip
+    w.host.checks[H1] = "success"
+    await w.poll(T0 + timedelta(minutes=1))
+    assert w.ledger.value("SELECT decision FROM merges") == "blocked"
+
+    w.host.human_review(REPO, 42, "stevenliu")  # Steven leaves a quick review himself
+    await w.poll(T0 + timedelta(minutes=2))
+    assert w.ledger.value("SELECT decision FROM merges") == "blocked"
+
+    w.host.reviews.clear()
+    w.host.request(REPO, 42, "stevenliu")
+    await w.poll(T0 + timedelta(minutes=3))
+    w.host.unrequest(REPO, 42, "stevenliu")  # a real un-request: the doppel leaves, its P1 doesn't
+    await w.poll(T0 + timedelta(minutes=4))
+    assert w.ledger.rows("SELECT * FROM pr_reviewers WHERE source='requested'") == []
+    assert w.ledger.value("SELECT decision FROM merges") == "blocked"
+    assert "APPROVE" not in w.github.events(merger_only=True)
 
 
 async def test_a_pr_that_leaves_the_listing_is_looked_up_once_and_closed(w):

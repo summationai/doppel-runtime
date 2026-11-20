@@ -93,6 +93,12 @@ class GitHubReader(Protocol):
         """`GET /repos/{repo}/issues/comments?since=...&sort=updated&direction=asc`: PR comments only."""
         ...
 
+    async def review_authors(self, repo: str, number: int, page: int = 1) -> list[str]:
+        """`GET /repos/{repo}/pulls/{number}/reviews?per_page=100&page=N`: who submitted each review (logins).
+
+        Read only when a requested login leaves the listing, to tell "they reviewed" from "un-requested"."""
+        ...
+
     async def ci_state(self, repo: str, sha: str) -> CIState | None:
         """`GET /repos/{repo}/commits/{sha}/check-runs`: None while nothing has reported."""
         ...

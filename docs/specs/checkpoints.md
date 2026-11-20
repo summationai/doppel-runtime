@@ -154,6 +154,7 @@ Done when:
   - Listings are paged.
   - CI is read only while the merger waits on it.
 - [x] A new PR, a push, a review request added or removed, a merge, a draft and a command each become the right scheduler event; reading the same state twice changes nothing; a command is acted on once even when GitHub returns it again.
+- [x] A requested person's own review leaves their doppel on the PR, since it posts as doppelwerk. Only an un-request removes it, and its posted P0/P1s keep blocking either way (the schema's `pr_reviewers.person_reviewed`).
 - [x] Through the running roles, with fakes ([test_runtime_reviews.py](../../src/control-plane/tests/test_runtime_reviews.py)): a polled PR is reviewed and approved, and merging it deletes its pod. A payer with no sign-in blocks and says so once, then runs when they connect.
 - [x] With real containers ([tests/integration/test_runtime_docker.py](../../tests/integration/test_runtime_docker.py)): the runtime builds its own sandbox from the config, and a polled PR is reviewed by real Codex in a real pod. The gateway swaps in the payer's credential and counts the tokens, the merger approves on CI, merging deletes the pod, and `stop` leaves no container behind.
 - [x] A runtime that died without stopping leaves pods; the next start removes them.

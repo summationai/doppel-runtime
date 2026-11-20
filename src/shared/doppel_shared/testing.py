@@ -176,6 +176,7 @@ class FakeGitHubHost:
     finished: dict[tuple[str, int], Literal["merged", "closed"]] = field(default_factory=dict)
     pr_comments: dict[str, list[PRComment]] = field(default_factory=dict)
     checks: dict[str, CIState] = field(default_factory=dict)  # sha -> state
+    reviews: dict[tuple[str, int], list[str]] = field(default_factory=dict)  # (repo, pr) -> review authors
     calls: list[str] = field(default_factory=list)
 
     # ---- driving it from a test ----
@@ -193,6 +194,11 @@ class FakeGitHubHost:
     def unrequest(self, repo: str, number: int, *logins: str) -> None:
         pr = self.prs[repo][number]
         self.prs[repo][number] = replace(pr, requested=pr.requested - set(logins))
+
+    def human_review(self, repo: str, number: int, login: str) -> None:
+        """A person submits a review: as GitHub does, they leave the requested list."""
+        self.reviews.setdefault((repo, number), []).append(login)
+        self.unrequest(repo, number, login)
 
     def close(self, repo: str, number: int, *, merged: bool = True) -> None:
         self.prs[repo].pop(number)
@@ -217,6 +223,10 @@ class FakeGitHubHost:
         self.calls.append(f"comments {repo} {page}")
         found = sorted((c for c in self.pr_comments.get(repo, []) if c.updated_at >= since), key=lambda c: c.updated_at)
         return found[(page - 1) * PAGE : page * PAGE]
+
+    async def review_authors(self, repo: str, number: int, page: int = 1) -> list[str]:
+        self.calls.append(f"reviews {repo}#{number} {page}")
+        return self.reviews.get((repo, number), [])[(page - 1) * PAGE : page * PAGE]
 
     async def ci_state(self, repo: str, sha: str) -> CIState | None:
         self.calls.append(f"ci {repo} {sha}")

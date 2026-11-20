@@ -574,9 +574,7 @@ class Scheduler:
             if latest is not None:
                 verdict = Verdict.parse(json.loads(latest["verdict"]))
                 reviewers.append(ReviewerStatus(handle, app, required, "posted", verdict.verdict, wait_until))
-                for f in verdict.findings:
-                    if f.blocking and not self._closed_by_person(pr_id, handle, f.id, latest["finished_at"]):
-                        blocking.append(OpenFinding(handle, f.id, f.severity, f.file, f.line, f.claim))
+                blocking += self._open_blocking(pr_id, handle, latest)
                 continue
             states = {
                 r["state"]
@@ -586,8 +584,29 @@ class Scheduler:
             }
             status = next((s for s in ("running", "queued", "blocked") if s in states), "waiting")
             reviewers.append(ReviewerStatus(handle, app, required, status, None, wait_until))
+        # A P0/P1 already posted on this head keeps blocking after its reviewer leaves the PR (an
+        # un-request): only a fix or a person's disposition closes it, never removing who found it.
+        on_pr = {r.reviewer for r in reviewers}
+        for row in self.ledger.rows(
+            "SELECT DISTINCT reviewer FROM slots WHERE pr_id=? AND head_sha=? AND state='posted'", (pr_id, head)
+        ):
+            if row["reviewer"] not in on_pr:
+                latest = self.ledger.one(
+                    "SELECT * FROM slots WHERE pr_id=? AND head_sha=? AND reviewer=? AND state='posted' "
+                    "ORDER BY finished_at DESC, id DESC LIMIT 1",
+                    (pr_id, head, row["reviewer"]),
+                )
+                blocking += self._open_blocking(pr_id, row["reviewer"], latest)
         ci = self.ledger.value("SELECT state FROM ci_status WHERE pr_id=? AND head_sha=?", (pr_id, head))
         return MergeInput(head, tuple(reviewers), ci, tuple(blocking))
+
+    def _open_blocking(self, pr_id: int, handle: str, posted: Any) -> list[OpenFinding]:
+        verdict = Verdict.parse(json.loads(posted["verdict"]))
+        return [
+            OpenFinding(handle, f.id, f.severity, f.file, f.line, f.claim)
+            for f in verdict.findings
+            if f.blocking and not self._closed_by_person(pr_id, handle, f.id, posted["finished_at"])
+        ]
 
     def _closed_by_person(self, pr_id: int, reviewer: str, fid: str, verdict_at: str) -> bool:
         """A disposition closes a finding, unless the reviewer raised it again after the disposition."""

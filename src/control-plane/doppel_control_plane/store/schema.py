@@ -159,8 +159,11 @@ ALTER TABLE slots ADD COLUMN provider_code TEXT;
 ALTER TABLE slots ADD COLUMN provider_type TEXT;
 """
 
-# Checkpoint 6: intake's place in each repo's comment listing, so a restart doesn't re-read from the start.
+# Checkpoint 6: intake's place in each repo's comment listing, so a restart doesn't re-read from the start;
+# and whether a requested person has reviewed themselves (GitHub then drops them from the requested list,
+# but their doppel stays on the PR: it posts as doppelwerk, not as them).
 V4 = """
+ALTER TABLE pr_reviewers ADD COLUMN person_reviewed INTEGER NOT NULL DEFAULT 0;
 CREATE TABLE intake_cursors (
   tenant         TEXT NOT NULL,
   repo           TEXT NOT NULL,

@@ -13,8 +13,10 @@ Everything here is a diff against the ledger, so a missed cycle is caught up by 
 the same answer read twice changes nothing. Webhooks (after the demo) call the same scheduler events;
 this poll stays as the reconcile.
 
-GitHub drops a requested reviewer from the listing once that person reviews. Intake reads that as
-the request being removed: their doppel stops waiting, and the merger no longer waits on it.
+GitHub drops a requested person from the listing once they review. Their doppel posts as doppelwerk,
+not as them, so their own review changes nothing for it: it stays on the PR and reviews every new
+head. Only an un-request removes it. Telling the two apart costs one read of the PR's reviews, once,
+when the login leaves the listing.
 """
 
 from __future__ import annotations
@@ -119,7 +121,7 @@ class Poller:
                 break
             page += 1
         for pr in listed.values():
-            self._reconcile(w, pr, now)
+            await self._reconcile(w, pr, now)
         for row in self.ledger.rows(
             "SELECT pr FROM prs WHERE tenant=? AND repo=? AND state IN (?,?)",
             (w.tenant, w.repo, PRState.OPEN, PRState.IDLE),
@@ -130,7 +132,7 @@ class Poller:
                 if state != "open":
                     self.scheduler.closed(PRRef(w.tenant, w.repo, row["pr"]), state == "merged", now)
 
-    def _reconcile(self, w: Watched, pr: OpenPR, now: datetime) -> None:
+    async def _reconcile(self, w: Watched, pr: OpenPR, now: datetime) -> None:
         ref = PRRef(w.tenant, w.repo, pr.number)
         row = self.ledger.one("SELECT * FROM prs WHERE tenant=? AND repo=? AND pr=?", (w.tenant, w.repo, pr.number))
         if row is None or row["state"] in (PRState.MERGED, PRState.CLOSED):  # new, or reopened
@@ -143,23 +145,59 @@ class Poller:
             if row["current_head"] != pr.head_sha:
                 log.info("intake: %s moved to %s", ref, pr.head_sha[:7])
                 self.scheduler.synchronize(ref, pr.head_sha, now)
+        await self._requests(w, ref, pr_id, pr, now)
 
+    async def _requests(self, w: Watched, ref: PRRef, pr_id: int, pr: OpenPR, now: datetime) -> None:
+        """Requested people: a new request adds their doppel; an un-request removes it; their own review doesn't."""
         wanted = {}
         for login in pr.requested:
             reviewer = self.directory.personal_reviewer(w.tenant, login)
             if reviewer is not None:
                 wanted[reviewer.handle] = login
-        rows = self.ledger.rows("SELECT reviewer FROM pr_reviewers WHERE pr_id=? AND source='requested'", (pr_id,))
-        known = {r["reviewer"] for r in rows}
-        for handle in sorted(wanted.keys() - known):
-            log.info("intake: %s requested %s", ref, wanted[handle])
-            self.scheduler.review_requested(ref, wanted[handle], now)
+        known = {
+            r["reviewer"]: r["person_reviewed"]
+            for r in self.ledger.rows(
+                "SELECT reviewer, person_reviewed FROM pr_reviewers WHERE pr_id=? AND source='requested'", (pr_id,)
+            )
+        }
+        for handle in sorted(wanted):
+            if handle not in known:
+                log.info("intake: %s requested %s", ref, wanted[handle])
+                self.scheduler.review_requested(ref, wanted[handle], now)
+            elif known[handle]:  # requested again after reviewing: a later departure is checked again
+                self._mark_reviewed(pr_id, handle, False)
+
+        gone = [h for h, reviewed in sorted(known.items()) if h not in wanted and not reviewed]
+        if not gone:
+            return
+        authors = await self._review_authors(w, pr.number, now)
         by_handle = {r.handle: r for r in self.directory.reviewers(w.tenant, w.repo)}
-        for handle in sorted(known - wanted.keys()):
+        for handle in gone:
             reviewer = by_handle.get(handle)
-            if reviewer is not None and reviewer.login:
+            if reviewer is None or not reviewer.login:
+                continue
+            if reviewer.login.lower() in authors:
+                log.info("intake: %s: %s reviewed it themselves; their doppel stays on", ref, reviewer.login)
+                self._mark_reviewed(pr_id, handle, True)
+            else:
                 log.info("intake: %s no longer requests %s", ref, reviewer.login)
                 self.scheduler.review_request_removed(ref, reviewer.login, now)
+
+    async def _review_authors(self, w: Watched, number: int, now: datetime) -> set[str]:
+        authors: set[str] = set()
+        page = 1
+        while True:
+            self.budget.take(w.tenant, now)
+            batch = await self.reader.review_authors(w.repo, number, page)
+            authors |= {login.lower() for login in batch}
+            if len(batch) < PAGE:
+                return authors
+            page += 1
+
+    def _mark_reviewed(self, pr_id: int, handle: str, reviewed: bool) -> None:
+        self.ledger.execute(
+            "UPDATE pr_reviewers SET person_reviewed=? WHERE pr_id=? AND reviewer=?", (int(reviewed), pr_id, handle)
+        )
 
     # ---- 2. Commands ---------------------------------------------------------------------------------
 
