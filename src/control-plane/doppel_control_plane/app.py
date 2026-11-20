@@ -4,7 +4,8 @@ Listeners are separate sockets so the network can keep pods away from all but th
 (DSV-8): pods reach `model`; `internal` (posting, broker, API) and `health` stay off the pod network.
 
 The broker and gateway always run. Intake, the scheduler and the sandbox run once GitHub is
-configured (`github.mode`), or when a caller hands in the GitHub ports (tests, the local demo).
+configured (`github.mode = "app"`: the App's REST ports), or when a caller hands in the GitHub ports
+(tests, the local demo). Webhooks are taken on the internal listener when a secret is configured.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from doppel_model_provider import api as broker_api
 from doppel_shared.ports import GitHub, GitHubReader, Sandbox
 
 from doppel_control_plane import __version__
-from doppel_control_plane.config import LISTENERS, Config
+from doppel_control_plane.config import LISTENERS, Config, read_secret
 from doppel_control_plane.core.matching import Limits
 from doppel_control_plane.directory import ConfigDirectory
 from doppel_control_plane.intake import Budget, Poller, Watched
@@ -30,6 +31,8 @@ from doppel_control_plane.roles import ROLE_NAMES, Role
 from doppel_control_plane.runs import LedgerRuns
 from doppel_control_plane.scheduler import Scheduler
 from doppel_control_plane.store import Ledger
+from doppel_control_plane.webhooks import PATH as WEBHOOK_PATH
+from doppel_control_plane.webhooks import Webhooks
 
 log = logging.getLogger("doppel_control_plane")
 
@@ -59,6 +62,8 @@ class Runtime:
         self.scheduler: Scheduler | None = None
         self.poller: Poller | None = None
         self.clock = clock
+        self.webhooks: Webhooks | None = None
+        self._git_env = None  # repo -> git environment carrying the App's token (app mode)
         self._tasks: list[asyncio.Task] = []
 
     def _app(self, listener: str) -> web.Application:
@@ -80,11 +85,19 @@ class Runtime:
             self.gateway.add_routes(app)
         if listener == "internal" and self.broker is not None:  # sign-ins: never on the model listener
             broker_api.add_routes(app, self.broker)
+        if listener == "internal":  # GitHub's events, forwarded by the BFF; 404 until webhooks are configured
+
+            async def webhook(request: web.Request) -> web.StreamResponse:
+                if self.webhooks is None:
+                    raise web.HTTPNotFound()
+                return await self.webhooks.handle(request)
+
+            app.router.add_post(WEBHOOK_PATH, webhook)
         return app
 
     async def start(self) -> None:
         if self.config.github.mode == "app" and (self.github is None or self.reader is None):
-            raise NotImplementedError("github.mode = app arrives in checkpoint 6b (the doppelwerk-dev App)")
+            self._github_app()
         self.config.data_dir.mkdir(parents=True, exist_ok=True)
         self.ledger = Ledger(self.config.ledger_path)
         requeued = self.ledger.requeue_running()
@@ -102,6 +115,17 @@ class Runtime:
             if role.name in ("broker", "gateway") or self.scheduler is not None:
                 await role.start()
 
+    def _github_app(self) -> None:
+        """The App's REST ports: one client, its installation tokens shared by reads, posts and fetches."""
+        from doppel_gateway.github import AppAuth, GitHubClient, RestGitHub, RestReader
+
+        gh = self.config.github
+        auth = AppAuth(gh.app_id, read_secret(gh.private_key), gh.api_url)
+        installations = {repo: t.installation_id for t in self.config.tenants for repo in t.repos}
+        client = GitHubClient(auth, installations)
+        self.github, self.reader, self._git_env = RestGitHub(client), RestReader(client), client.git_env
+        log.info("github: App %s, %d repo(s)", gh.app_id, len(installations))
+
     def _wire_reviews(self) -> None:
         """Intake, the scheduler and the sandbox: GitHub's state in, reviews and the merger's decisions out."""
         cfg = self.config
@@ -112,7 +136,10 @@ class Runtime:
         self.scheduler = Scheduler(self.ledger, directory, self.sandbox, self.github, limits)
         repos = [Watched(t.id, repo) for t in cfg.tenants for repo in t.repos]
         self.poller = Poller(self.ledger, self.scheduler, self.reader, directory, repos,
-                             Budget(cfg.intake.calls_per_hour), lookback=cfg.intake.lookback)  # fmt: skip
+                             Budget(cfg.intake.calls_per_hour), lookback=cfg.intake.lookback,
+                             auto_review=cfg.intake.auto_review)  # fmt: skip
+        if cfg.github.webhook_secret is not None:
+            self.webhooks = Webhooks(read_secret(cfg.github.webhook_secret).encode(), self.poller, self.clock)
 
         async def poll() -> None:
             await self.poller.poll(self.clock())
@@ -133,7 +160,7 @@ class Runtime:
         self.ledger.execute("UPDATE prs SET pod_id=NULL WHERE pod_id IS NOT NULL")
         owner = hashlib.sha256(str(cfg.data_dir.resolve()).encode()).hexdigest()[:12]
         pods = DockerPods(
-            cfg.data_dir / "pods", Mirrors(cfg.data_dir / "mirrors"), image=cfg.sandbox.image,
+            cfg.data_dir / "pods", Mirrors(cfg.data_dir / "mirrors", git_env=self._git_env), image=cfg.sandbox.image,
             gateway_target=cfg.sandbox.gateway_target or f"host.docker.internal:{self.bound['model'][1]}",
             repo_url=lambda pr: cfg.github.repo_url.format(repo=pr.repo),
             on_verdict=lambda slot, v: self.scheduler.verdict(slot, v, self.clock()),

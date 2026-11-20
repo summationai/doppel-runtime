@@ -181,8 +181,10 @@ class FakeGitHubHost:
 
     # ---- driving it from a test ----
 
-    def open(self, repo: str, number: int, head: str, *, author: str = "troyb", requested=(), draft=False) -> None:
-        self.prs.setdefault(repo, {})[number] = OpenPR(number, head, "main", author, frozenset(requested), draft)
+    def open(self, repo: str, number: int, head: str, *, author: str = "troyb", requested=(), draft=False,
+             association: str = "MEMBER", base: str = "main") -> None:  # fmt: skip
+        self.prs.setdefault(repo, {})[number] = OpenPR(number, head, base, author, frozenset(requested), draft,
+                                                       association)  # fmt: skip
 
     def push(self, repo: str, number: int, head: str) -> None:
         self.prs[repo][number] = replace(self.prs[repo][number], head_sha=head)

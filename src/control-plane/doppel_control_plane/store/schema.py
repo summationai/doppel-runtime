@@ -172,5 +172,10 @@ CREATE TABLE intake_cursors (
 );
 """
 
-MIGRATIONS = {1: V1, 2: V2, 3: V3, 4: V4}
+# Checkpoint 6b: the PR's base branch (the diff is taken against it), from intake.
+V5 = """
+ALTER TABLE prs ADD COLUMN base_ref TEXT;
+"""
+
+MIGRATIONS = {1: V1, 2: V2, 3: V3, 4: V4, 5: V5}
 SCHEMA_VERSION = max(MIGRATIONS)

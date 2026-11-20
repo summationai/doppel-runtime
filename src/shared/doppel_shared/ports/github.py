@@ -60,6 +60,7 @@ class OpenPR:
     author: str
     requested: frozenset[str] = frozenset()  # logins whose review is requested (GitHub drops one who reviews)
     draft: bool = False
+    author_association: str = "MEMBER"  # OWNER | MEMBER | COLLABORATOR | CONTRIBUTOR | NONE | ...
 
 
 @dataclass(frozen=True)

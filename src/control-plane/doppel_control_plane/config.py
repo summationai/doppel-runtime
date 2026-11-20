@@ -20,13 +20,18 @@ No secret belongs in the file. Model sign-ins live in each payer's Codex home un
     "summation/u-steven" = "/Users/steven/.codex"
 
     [github]
-    mode = "off"                          # off: no intake or scheduler | app: the GitHub App (checkpoint 6b)
+    mode = "off"                          # off: no intake or scheduler | app: the GitHub App
     repo_url = "https://github.com/{repo}.git"
+    app_id = "123456"                     # app mode: the App's id ...
+    private_key = "/var/lib/doppel/github/app.pem"       # ... and its private key (owner-only file)
+    webhook_secret = "/var/lib/doppel/github/webhook-secret"   # optional: a file; webhooks off without it
+    api_url = "https://api.github.com"
 
     [intake]
     poll_seconds = 60
     calls_per_hour = 2000                 # per installation; GitHub allows an App 5000, posting needs the rest
     lookback_minutes = 60                 # how far back the first poll reads comments
+    auto_review = "insiders"              # insiders | everyone: whose PRs get the app's reviewers unasked
 
     [scheduler]
     tick_seconds = 5
@@ -45,6 +50,7 @@ No secret belongs in the file. Model sign-ins live in each payer's Codex home un
     [[tenants]]
     id = "summation"
     repos = ["summationai/billing"]
+    installation_id = 7890123             # app mode: the App's installation on these repos' owner
 
       [[tenants.reviewers]]
       handle = "steven"                   # a person's doppel: runs on their sign-in, where they are requested
@@ -93,12 +99,17 @@ class Tenant:
     id: str
     repos: tuple[str, ...] = ()
     reviewers: tuple[TenantReviewer, ...] = ()
+    installation_id: int | None = None
 
 
 @dataclass(frozen=True)
 class GitHubConfig:
     mode: str = "off"  # off | app
     repo_url: str = "https://github.com/{repo}.git"
+    app_id: str | None = None
+    private_key: Path | None = None
+    webhook_secret: Path | None = None
+    api_url: str = "https://api.github.com"
 
 
 @dataclass(frozen=True)
@@ -106,6 +117,7 @@ class IntakeConfig:
     poll: timedelta = timedelta(seconds=60)
     calls_per_hour: int = 2000
     lookback: timedelta = timedelta(minutes=60)
+    auto_review: str = "insiders"
 
 
 @dataclass(frozen=True)
@@ -166,15 +178,31 @@ def load(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
     mode = env.get("DOPPEL_GITHUB_MODE") or gh.get("mode", "off")
     if mode not in ("off", "app"):
         raise ValueError(f"github.mode must be off or app, not {mode!r}")
+    github = GitHubConfig(
+        mode,
+        gh.get("repo_url", GitHubConfig.repo_url),
+        str(gh["app_id"]) if gh.get("app_id") else None,
+        Path(gh["private_key"]).expanduser() if gh.get("private_key") else None,
+        Path(gh["webhook_secret"]).expanduser() if gh.get("webhook_secret") else None,
+        gh.get("api_url", GitHubConfig.api_url),
+    )
+    tenants = tuple(_tenant(t) for t in raw.get("tenants", []))
+    if mode == "app":
+        if not (github.app_id and github.private_key):
+            raise ValueError("github.mode = app needs github.app_id and github.private_key")
+        missing = [t.id for t in tenants if t.repos and t.installation_id is None]
+        if missing:
+            raise ValueError(f"github.mode = app needs an installation_id for tenant(s) {', '.join(missing)}")
     return Config(
         data_dir=data_dir,
         listeners=listeners,
         codex_homes=homes,
-        github=GitHubConfig(mode, gh.get("repo_url", GitHubConfig.repo_url)),
+        github=github,
         intake=IntakeConfig(
             timedelta(seconds=it.get("poll_seconds", 60)),
             int(it.get("calls_per_hour", 2000)),
             timedelta(minutes=it.get("lookback_minutes", 60)),
+            it.get("auto_review", "insiders"),
         ),
         scheduler=SchedulerConfig(
             timedelta(seconds=sc.get("tick_seconds", 5)),
@@ -189,8 +217,16 @@ def load(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
             str(sb.get("cpus", SandboxConfig.cpus)),
             sb.get("gateway_target") or None,
         ),
-        tenants=tuple(_tenant(t) for t in raw.get("tenants", [])),
+        tenants=tenants,
     )
+
+
+def read_secret(path: Path) -> str:
+    """A secret file the runtime holds: refused unless only its owner can read it."""
+    mode = path.stat().st_mode
+    if mode & 0o077:
+        raise PermissionError(f"{path} is readable by others (mode {oct(mode & 0o777)}); chmod 600 it")
+    return path.read_text().strip()
 
 
 def _tenant(raw: dict) -> Tenant:
@@ -208,4 +244,5 @@ def _tenant(raw: dict) -> Tenant:
     handles = [t.reviewer.handle for t in reviewers]
     if len(handles) != len(set(handles)):
         raise ValueError(f"tenant {tid}: reviewer handles must be unique")
-    return Tenant(tid, tuple(raw.get("repos", ())), tuple(reviewers))
+    inst = raw.get("installation_id")
+    return Tenant(tid, tuple(raw.get("repos", ())), tuple(reviewers), int(inst) if inst is not None else None)
