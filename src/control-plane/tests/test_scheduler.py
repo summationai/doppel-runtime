@@ -143,7 +143,9 @@ def test_no_sign_in_blocks_says_so_once_and_starts_once_connected(w):
     w.s.tick(at(91))
     w.s.tick(at(120))
     assert w.slot("steven")["state"] == "blocked"
-    assert w.github.replies == ["steven's review is waiting: u-steven has no working sign-in. Connect Codex to run it."]
+    assert w.github.replies == [
+        "steven's review is waiting: u-steven has no working sign-in. Reconnect Codex to run it."
+    ]
     w.directory.signed.add("u-steven")
     w.s.tick(at(130))
     assert w.slot("steven")["state"] == "running"

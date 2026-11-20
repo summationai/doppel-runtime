@@ -64,3 +64,10 @@ async def test_signed_out(tmp_path):
     write(homes, "summation/u-steven", {"tokens": None, "OPENAI_API_KEY": None})
     with pytest.raises(NotSignedIn):
         await homes.credential("summation/u-steven")
+
+
+def test_make_home_creates_missing_parent_folders(tmp_path):
+    """Found by the live check: the data folder needn't exist yet."""
+    homes = CodexHomes(tmp_path / "not" / "yet" / "tenants")
+    home = homes.make_home("summation/u-steven")
+    assert home.is_dir() and stat.S_IMODE(home.stat().st_mode) == 0o700

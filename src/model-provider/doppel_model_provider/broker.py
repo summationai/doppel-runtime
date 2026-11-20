@@ -6,7 +6,8 @@
     keep_fresh()  every 10 minutes: refresh any sign-in whose own `last_refresh` is 6 hours old, so
                   the refresh token stays in use whatever restarts happen
     login()       a device-code sign-in in the payer's own Codex home
-    status()      connected | signing_in | signed_out | refresh_failed, for the BFF
+    rejected()    the provider refused the sign-in even after a refresh: dead until the person signs in again
+    status()      connected | signing_in | signed_out | expired, for the BFF
 
 Sign-ins live in each payer's Codex home on this disk (codex_homes). Tokens are never printed or logged.
 """
@@ -56,11 +57,19 @@ class Broker:
         self._refreshed_at: dict[str, float] = {}  # monotonic time of each payer's last refresh
         self._errors: dict[str, str] = {}
         self._logins: dict[str, tuple[DeviceCode, asyncio.Task]] = {}
+        self._rejected: dict[str, str] = {}  # payer -> the provider's status and code, until they sign in again
 
     # ---- the gateway's port --------------------------------------------------------------------------
 
     async def credential(self, payer: str) -> Credential:
+        if payer in self._rejected:  # don't keep sending a credential the provider has refused
+            raise NotSignedIn(f"{payer}: refused by the provider ({self._rejected[payer]}): reconnect Codex")
         return self.homes.read(payer)
+
+    def rejected(self, payer: str, reason: str) -> None:
+        self._rejected[payer] = reason
+        self._errors[payer] = f"refused by the provider: {reason}"
+        log.error("payer %s: sign-in refused by the provider (%s); reconnect needed", payer, reason)
 
     async def refresh(self, payer: str) -> Credential:
         asked = time.monotonic()
@@ -128,6 +137,7 @@ class Broker:
             log.error("payer %s: sign-in failed (%s)", payer, type(e).__name__)
         if ok and self.homes.signed_in(payer):
             self._errors.pop(payer, None)
+            self._rejected.pop(payer, None)
             self._refreshed_at[payer] = time.monotonic()
             log.info("payer %s: signed in", payer)
             return True
@@ -143,6 +153,7 @@ class Broker:
         if payer not in self.homes.overrides and home.is_dir():
             shutil.rmtree(home)
         self._errors.pop(payer, None)
+        self._rejected.pop(payer, None)
         log.info("payer %s: disconnected", payer)
 
     def status(self, payer: str) -> dict[str, Any]:
@@ -150,8 +161,8 @@ class Broker:
         open_login = self._logins.get(payer)
         if open_login and not open_login[1].done():
             state = "signing_in"
-        elif self._errors.get(payer, "").startswith("refresh failed"):
-            state = "refresh_failed"
+        elif payer in self._rejected or self._errors.get(payer, "").startswith("refresh failed"):
+            state = "expired"
         elif self.homes.signed_in(payer):
             state = "connected"
         else:

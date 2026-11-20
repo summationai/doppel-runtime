@@ -515,7 +515,7 @@ class Scheduler:
         who = slot["payer_user"] or "nobody"
         self.github.reply(
             self._ref(pr),
-            f"{slot['reviewer']}'s review is waiting: {who} has no working sign-in. Connect Codex to run it.",
+            f"{slot['reviewer']}'s review is waiting: {who} has no working sign-in. Reconnect Codex to run it.",
         )
 
     def _set_waiting(self, slot: Any, wait: matching.Wait) -> None:

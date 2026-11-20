@@ -149,6 +149,7 @@ class FakeRuns:
     by_hash: dict[str, Run] = field(default_factory=dict)
     tokens: dict[int, int] = field(default_factory=dict)
     resets: dict[str, datetime] = field(default_factory=dict)
+    errors: dict[int, tuple] = field(default_factory=dict)
 
     def running(self, capability_hash: str):
         run = self.by_hash.get(capability_hash)
@@ -161,3 +162,6 @@ class FakeRuns:
 
     def record_usage_reset(self, payer: str, reset_at: datetime) -> None:
         self.resets[payer] = reset_at
+
+    def provider_error(self, slot_id: int, status: int, code: str | None, kind: str | None) -> None:
+        self.errors[slot_id] = (status, code, kind)
