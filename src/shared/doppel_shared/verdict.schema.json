@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://summation.com/doppelwerk/verdict.schema.json",
+  "title": "Doppelwerk Verdict",
+  "description": "The single artifact a doppel produces per review. Everything downstream (poster, ledger, doppelboard) consumes only this.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "doppel",
+    "pr",
+    "head_sha",
+    "engine",
+    "verdict",
+    "findings",
+    "scope"
+  ],
+  "properties": {
+    "doppel": {
+      "type": "string",
+      "description": "handle, e.g. 'rc'"
+    },
+    "pr": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "head_sha": {
+      "type": "string",
+      "minLength": 7
+    },
+    "engine": {
+      "type": "string",
+      "description": "engine + model, e.g. 'claude-opus-4-8'"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "clean",
+        "comments",
+        "changes_requested",
+        "stood_down"
+      ],
+      "description": "clean=nothing to flag; comments=P2/P3 only; changes_requested=P0/P1 present; stood_down=PR too large / not reviewable"
+    },
+    "summary": {
+      "type": "string",
+      "description": "one-paragraph human-facing summary for the review header"
+    },
+    "critical": {
+      "type": "boolean",
+      "description": "Set true when this PR needs rc even though no critical path glob matched: a spec decision that is rc's to make, or an authorization change in a file nobody listed. This can only ADD escalation. Leaving it out, or setting it false, never clears an escalation the changed paths already earned."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "severity",
+          "category",
+          "file",
+          "line",
+          "introduced_by_diff",
+          "claim",
+          "evidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "correctness",
+              "security",
+              "contract",
+              "perf",
+              "tests",
+              "style",
+              "architecture"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "introduced_by_diff": {
+            "type": "boolean",
+            "description": "false = pre-existing; such findings are advisory only"
+          },
+          "claim": {
+            "type": "string",
+            "description": "what is wrong, one sentence"
+          },
+          "evidence": {
+            "type": "string",
+            "description": "the code paths actually read that prove the claim"
+          },
+          "suggestion": {
+            "type": "string",
+            "description": "concrete fix"
+          },
+          "precondition": {
+            "type": "string",
+            "description": "OPTIONAL only because a twice-failed validation kills the whole review; the prompt demands it and an omission routes the finding to the verify gate rather than earning it leniency. The concrete condition that must hold for this to fire, e.g. 'a pod restart between the publish at :2836 and the retire at :2859'. Literally 'none' when it fires on the normal path. A finding whose trigger cannot be named is not a finding."
+          },
+          "reachability": {
+            "type": "string",
+            "enum": [
+              "always",
+              "conditional",
+              "rare"
+            ],
+            "description": "always=fires on the normal path; conditional=needs a real config or input that deployments do have; rare=needs an unlikely interleaving, a narrow restart window, or a config nobody runs. The runner enforces a P3 ceiling on 'rare' (and drops rare findings on pre-existing code) — this field prices the finding, so state it honestly rather than to clear a bar."
+          },
+          "fix_scope": {
+            "type": "string",
+            "enum": [
+              "in_pr",
+              "follow_up"
+            ],
+            "description": "where the FIX lands, not how serious the finding is. in_pr = fixable within the surfaces this diff touches. follow_up = the fix requires systems the PR never touched (a new endpoint, token, schema, pagination API). The runner caps follow_up at P2: a real observation about ambient infrastructure must not block the PR that merely bumped into it."
+          },
+          "still_open": {
+            "type": "boolean",
+            "description": "runner-stamped: this doppel already posted this same finding on an earlier round of this PR and it is still unaddressed. Keeps its severity and verdict weight, but the poster renders it as one line instead of a fresh full-length finding."
+          },
+          "downgraded_from": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1"
+            ],
+            "description": "runner-stamped: the severity this finding carried before the verify gate or the reachability ceiling re-rated it down. Drives the poster's compressed rendering."
+          },
+          "boundary_class": {
+            "type": "string",
+            "enum": [
+              "credential",
+              "tenant",
+              "gate"
+            ],
+            "description": "OPTIONAL. Set only on a finding whose proven outcome is: credential = a credential or token readable by the wrong role, process or log; tenant = an organization or tenant boundary crossed, races included; gate = a merge or security gate that can approve, clear or skip wrongly. A reviewer that carries a severity floor never rates such a finding below P1, however conditional its trigger. Leave it off everything else."
+          },
+          "raised_from": {
+            "type": "string",
+            "enum": [
+              "P2",
+              "P3"
+            ],
+            "description": "runner-stamped: the severity this finding carried before the severity floor raised it to P1 because of its boundary_class."
+          }
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "files_reviewed"
+      ],
+      "properties": {
+        "files_reviewed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "files_skipped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "properties": {
+        "queued_at": {
+          "type": "string"
+        },
+        "completed_at": {
+          "type": "string"
+        }
+      }
+    },
+    "scrutiny": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "how hard this PR was reviewed — stamped by the runner, drives the poster's high-scrutiny banner",
+      "properties": {
+        "high": {
+          "type": "boolean",
+          "description": "PR touched a high-scrutiny path"
+        },
+        "passes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "adversarial passes run"
+        },
+        "verified": {
+          "type": "boolean",
+          "description": "blocker verify-and-re-rate gate ran"
+        }
+      }
+    }
+  }
+}

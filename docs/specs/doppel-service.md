@@ -279,7 +279,7 @@ One Codex process serves one provider, so it carries one capability ([spike 0a](
 - Rules, guides and repo context are read from the **base** ref, never the head, so a PR can't rewrite the rules that judge it.
 - The head's own `AGENTS.md` must not load as instructions. Codex reads `AGENTS.md` from its working directory; `project_doc_max_bytes = 0` keeps it out, and a repo-level `.codex/config.toml` doesn't load ([spike 0c](../spikes/codex-sdk.md)).
 - Reviewers see the whole repo, not just the diff, so they can open callers, read tests and grep. Doppelwerk already works this way.
-- The review is static. Doppelwerk gives Claude `--allowedTools Read,Grep,Glob` and Codex `--sandbox read-only`. Its only window into execution is CI's results, read through the API. Running the PR is Crew's verifier's job.
+- The review is static. Inside the pod, Codex's own sandbox (bwrap) is off: it can't create namespaces in a pod with no capabilities (found live, 2026-11-20). The pod is the boundary: read-only root and checkout, no capabilities, its own Unix user per reviewer run, a network that reaches only the gateway, no toolchains. Doppelwerk gives Claude `--allowedTools Read,Grep,Glob` and Codex `--sandbox read-only`. Its only window into execution is CI's results, read through the API. Running the PR is Crew's verifier's job.
 
 ### Why one pod per PR
 

@@ -21,7 +21,7 @@ P1 = OpenFinding("troy", "F1", "P1", "sender.py", 88, "the backoff never resets"
 
 def inp(reviewers=None, ci="success", blocking=()):
     reviewers = (app(), person()) if reviewers is None else reviewers
-    return MergeInput("bbb222", tuple(reviewers), ci, tuple(blocking))
+    return MergeInput("bbb2222", tuple(reviewers), ci, tuple(blocking))
 
 
 @pytest.mark.parametrize(
