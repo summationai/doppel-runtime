@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from typing import Literal
 
-from doppel_shared.ports import InlineComment, PostedReview, ReviewJob, Run
+from doppel_shared.ports import PAGE, CIState, InlineComment, OpenPR, PostedReview, PRComment, ReviewJob, Run
 from doppel_shared.types import PRRef, Reviewer, ReviewerKind
 
 STEVEN = Reviewer("steven", ReviewerKind.PERSONAL, owner="u-steven", login="stevenliu")
@@ -165,3 +166,58 @@ class FakeRuns:
 
     def provider_error(self, slot_id: int, status: int, code: str | None, kind: str | None) -> None:
         self.errors[slot_id] = (status, code, kind)
+
+
+@dataclass
+class FakeGitHubHost:
+    """GitHub's read side for intake: repos with open PRs, comments and CI. Counts every request."""
+
+    prs: dict[str, dict[int, OpenPR]] = field(default_factory=dict)  # repo -> number -> open PR
+    finished: dict[tuple[str, int], Literal["merged", "closed"]] = field(default_factory=dict)
+    pr_comments: dict[str, list[PRComment]] = field(default_factory=dict)
+    checks: dict[str, CIState] = field(default_factory=dict)  # sha -> state
+    calls: list[str] = field(default_factory=list)
+
+    # ---- driving it from a test ----
+
+    def open(self, repo: str, number: int, head: str, *, author: str = "troyb", requested=(), draft=False) -> None:
+        self.prs.setdefault(repo, {})[number] = OpenPR(number, head, "main", author, frozenset(requested), draft)
+
+    def push(self, repo: str, number: int, head: str) -> None:
+        self.prs[repo][number] = replace(self.prs[repo][number], head_sha=head)
+
+    def request(self, repo: str, number: int, *logins: str) -> None:
+        pr = self.prs[repo][number]
+        self.prs[repo][number] = replace(pr, requested=pr.requested | set(logins))
+
+    def unrequest(self, repo: str, number: int, *logins: str) -> None:
+        pr = self.prs[repo][number]
+        self.prs[repo][number] = replace(pr, requested=pr.requested - set(logins))
+
+    def close(self, repo: str, number: int, *, merged: bool = True) -> None:
+        self.prs[repo].pop(number)
+        self.finished[(repo, number)] = "merged" if merged else "closed"
+
+    def comment(self, repo: str, number: int, cid: str, body: str, at: datetime, *,
+                author: str = "stevenliu", association: str = "MEMBER") -> None:  # fmt: skip
+        self.pr_comments.setdefault(repo, []).append(PRComment(cid, number, author, association, body, at))
+
+    # ---- the GitHubReader port ----
+
+    async def open_prs(self, repo: str, page: int = 1) -> list[OpenPR]:
+        self.calls.append(f"open_prs {repo} {page}")
+        prs = sorted(self.prs.get(repo, {}).values(), key=lambda p: p.number)
+        return prs[(page - 1) * PAGE : page * PAGE]
+
+    async def pr_state(self, repo: str, number: int):
+        self.calls.append(f"pr_state {repo}#{number}")
+        return "open" if number in self.prs.get(repo, {}) else self.finished.get((repo, number), "closed")
+
+    async def comments(self, repo: str, since: datetime, page: int = 1) -> list[PRComment]:
+        self.calls.append(f"comments {repo} {page}")
+        found = sorted((c for c in self.pr_comments.get(repo, []) if c.updated_at >= since), key=lambda c: c.updated_at)
+        return found[(page - 1) * PAGE : page * PAGE]
+
+    async def ci_state(self, repo: str, sha: str) -> CIState | None:
+        self.calls.append(f"ci {repo} {sha}")
+        return self.checks.get(sha)

@@ -159,5 +159,15 @@ ALTER TABLE slots ADD COLUMN provider_code TEXT;
 ALTER TABLE slots ADD COLUMN provider_type TEXT;
 """
 
-MIGRATIONS = {1: V1, 2: V2, 3: V3}
+# Checkpoint 6: intake's place in each repo's comment listing, so a restart doesn't re-read from the start.
+V4 = """
+CREATE TABLE intake_cursors (
+  tenant         TEXT NOT NULL,
+  repo           TEXT NOT NULL,
+  comments_since TEXT NOT NULL,
+  PRIMARY KEY (tenant, repo)
+);
+"""
+
+MIGRATIONS = {1: V1, 2: V2, 3: V3, 4: V4}
 SCHEMA_VERSION = max(MIGRATIONS)

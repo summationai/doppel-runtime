@@ -2,30 +2,52 @@
 
 Listeners are separate sockets so the network can keep pods away from all but the model route
 (DSV-8): pods reach `model`; `internal` (posting, broker, API) and `health` stay off the pod network.
+
+The broker and gateway always run. Intake, the scheduler and the sandbox run once GitHub is
+configured (`github.mode`), or when a caller hands in the GitHub ports (tests, the local demo).
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import signal
+from datetime import UTC, datetime
 
 from aiohttp import web
 from doppel_gateway import MODEL_MAX_BYTES, ModelRoute
 from doppel_model_provider import Broker, CodexHomes, CodexSdkAccount
 from doppel_model_provider import api as broker_api
+from doppel_shared.ports import GitHub, GitHubReader, Sandbox
 
 from doppel_control_plane import __version__
 from doppel_control_plane.config import LISTENERS, Config
-from doppel_control_plane.roles import Role, make_roles
+from doppel_control_plane.core.matching import Limits
+from doppel_control_plane.directory import ConfigDirectory
+from doppel_control_plane.intake import Budget, Poller, Watched
+from doppel_control_plane.roles import ROLE_NAMES, Role
 from doppel_control_plane.runs import LedgerRuns
+from doppel_control_plane.scheduler import Scheduler
 from doppel_control_plane.store import Ledger
 
 log = logging.getLogger("doppel_control_plane")
 
 
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 class Runtime:
-    def __init__(self, config: Config):
+    def __init__(
+        self,
+        config: Config,
+        *,
+        github: GitHub | None = None,
+        reader: GitHubReader | None = None,
+        sandbox: Sandbox | None = None,
+        clock=utcnow,
+    ):
         self.config = config
         self.ledger: Ledger | None = None
         self.roles: dict[str, Role] = {}
@@ -33,6 +55,10 @@ class Runtime:
         self.bound: dict[str, tuple[str, int]] = {}  # listener -> (host, port) actually bound
         self.gateway: ModelRoute | None = None
         self.broker: Broker | None = None
+        self.github, self.reader, self.sandbox = github, reader, sandbox
+        self.scheduler: Scheduler | None = None
+        self.poller: Poller | None = None
+        self.clock = clock
         self._tasks: list[asyncio.Task] = []
 
     def _app(self, listener: str) -> web.Application:
@@ -57,18 +83,67 @@ class Runtime:
         return app
 
     async def start(self) -> None:
+        if self.config.github.mode == "app" and (self.github is None or self.reader is None):
+            raise NotImplementedError("github.mode = app arrives in checkpoint 6b (the doppelwerk-dev App)")
         self.config.data_dir.mkdir(parents=True, exist_ok=True)
         self.ledger = Ledger(self.config.ledger_path)
         requeued = self.ledger.requeue_running()
         if requeued:
             log.info("requeued %d slot(s) left running by the last process", requeued)
-        self.roles = make_roles(self.ledger)
         homes = CodexHomes(self.config.tenants_dir, self.config.codex_homes)
         self.broker = Broker(homes, CodexSdkAccount())
         self._tasks.append(asyncio.create_task(self.broker.keep_fresh()))
         self.gateway = ModelRoute(LedgerRuns(self.ledger), self.broker)
+        self.roles = {name: Role(name) for name in ROLE_NAMES}
+        await self._listen()  # first: the sandbox needs the model listener's port
+        if self.github is not None or self.config.github.mode != "off":
+            self._wire_reviews()
         for role in self.roles.values():
-            await role.start()
+            if role.name in ("broker", "gateway") or self.scheduler is not None:
+                await role.start()
+
+    def _wire_reviews(self) -> None:
+        """Intake, the scheduler and the sandbox: GitHub's state in, reviews and the merger's decisions out."""
+        cfg = self.config
+        if self.sandbox is None:
+            self.sandbox = self._docker_pods()
+        directory = ConfigDirectory(cfg.tenants, lambda payer: self.broker.status(payer)["state"] == "connected")
+        limits = Limits(settle=cfg.scheduler.settle, payer_cap=cfg.scheduler.payer_cap, host_cap=cfg.scheduler.host_cap)
+        self.scheduler = Scheduler(self.ledger, directory, self.sandbox, self.github, limits)
+        repos = [Watched(t.id, repo) for t in cfg.tenants for repo in t.repos]
+        self.poller = Poller(self.ledger, self.scheduler, self.reader, directory, repos,
+                             Budget(cfg.intake.calls_per_hour), lookback=cfg.intake.lookback)  # fmt: skip
+
+        async def poll() -> None:
+            await self.poller.poll(self.clock())
+
+        async def tick() -> None:
+            self.scheduler.tick(self.clock())
+
+        self.roles["intake"] = Role("intake", poll, cfg.intake.poll.total_seconds())
+        self.roles["scheduler"] = Role("scheduler", tick, cfg.scheduler.tick.total_seconds())
+        log.info("reviews on: %d repo(s) polled every %ss", len(repos), cfg.intake.poll.total_seconds())
+
+    def _docker_pods(self) -> Sandbox:
+        from doppel_control_plane.mirrors import Mirrors
+        from doppel_control_plane.pods import DockerPods
+
+        cfg = self.config
+        # Pods from a process that died are orphans: this process can't drive them. Start clean.
+        self.ledger.execute("UPDATE prs SET pod_id=NULL WHERE pod_id IS NOT NULL")
+        owner = hashlib.sha256(str(cfg.data_dir.resolve()).encode()).hexdigest()[:12]
+        pods = DockerPods(
+            cfg.data_dir / "pods", Mirrors(cfg.data_dir / "mirrors"), image=cfg.sandbox.image,
+            gateway_target=cfg.sandbox.gateway_target or f"host.docker.internal:{self.bound['model'][1]}",
+            repo_url=lambda pr: cfg.github.repo_url.format(repo=pr.repo),
+            on_verdict=lambda slot, v: self.scheduler.verdict(slot, v, self.clock()),
+            on_failed=lambda slot, why: self.scheduler.slot_failed(slot, why, self.clock()),
+            runtime=cfg.sandbox.runtime, memory=cfg.sandbox.memory, cpus=cfg.sandbox.cpus, owner=owner,
+        )  # fmt: skip
+        pods.sweep()
+        return pods
+
+    async def _listen(self) -> None:
         for name in LISTENERS:
             listener = self.config.listeners[name]
             runner = web.AppRunner(self._app(name), access_log=None)
@@ -84,11 +159,16 @@ class Runtime:
         for task in self._tasks:
             task.cancel()
         self._tasks.clear()
+        for role in self.roles.values():
+            await role.stop()
         for runner in reversed(self._runners):
             await runner.cleanup()
         self._runners.clear()
-        for role in self.roles.values():
-            await role.stop()
+        close = getattr(self.sandbox, "close", None)
+        if close is not None and self.scheduler is not None:
+            # The pods go; the ledger keeps their slots, which go back to queued at the next start.
+            self.ledger.execute("UPDATE prs SET pod_id=NULL WHERE pod_id IS NOT NULL")
+            await asyncio.to_thread(close)
         if self.ledger is not None:
             self.ledger.close()
 

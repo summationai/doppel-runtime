@@ -50,7 +50,9 @@ def test_serve_answers_health_on_every_listener(tmp_path):
             body = health(port)
             assert body["ok"] and body["listener"] == name
             assert set(body["roles"]) == {"intake", "scheduler", "broker", "gateway", "sandbox"}
-            assert all(body["roles"].values())
+            # GitHub isn't configured: the broker and gateway run; intake, scheduler and sandbox wait for it.
+            assert body["roles"] == {"intake": False, "scheduler": False, "broker": True, "gateway": True,
+                                     "sandbox": False}  # fmt: skip
     finally:
         proc.send_signal(signal.SIGTERM)
         assert proc.wait(10) == 0

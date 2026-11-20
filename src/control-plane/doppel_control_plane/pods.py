@@ -97,12 +97,15 @@ class DockerPods:
         egress_image: str = "python:3.12-slim-bookworm",
         memory: str = "2g",
         cpus: str = "1",
+        owner: str = "",  # labels this runtime's containers and networks, so `sweep` removes only its own
     ):
         self.root, self.mirrors = root, mirrors
         self.image, self.gateway_target, self.runtime = image, gateway_target, runtime
         self.repo_url, self.pr_ref, self.base_branch = repo_url, pr_ref, base_branch
         self.on_verdict, self.on_failed = on_verdict, on_failed
         self.egress_image, self.memory, self.cpus = egress_image, memory, cpus
+        self.owner = owner
+        self.labels = ["--label", f"doppel.owner={owner}"] if owner else []
         self.egress = f"doppel-egress-{secrets.token_hex(3)}"
         self.pods: dict[str, Pod] = {}
 
@@ -111,7 +114,8 @@ class DockerPods:
     def _ensure_egress(self) -> None:
         if docker("ps", "-q", "--filter", f"name=^{self.egress}$"):
             return
-        docker("run", "-d", "--rm", "--name", self.egress, "--add-host", "host.docker.internal:host-gateway",
+        docker("run", "-d", "--rm", "--name", self.egress, *self.labels,
+               "--add-host", "host.docker.internal:host-gateway",
                "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                self.egress_image, "python", "-c", EGRESS_SCRIPT, self.gateway_target)  # fmt: skip
 
@@ -125,7 +129,7 @@ class DockerPods:
             (folder / sub).mkdir(parents=True, exist_ok=True)
             (folder / sub).chmod(0o755)
         network = pod_id
-        docker("network", "create", "--internal", network)
+        docker("network", "create", "--internal", *self.labels, network)
         docker("network", "connect", "--alias", "gateway", network, self.egress)
         docker(
             "run", "-d", "--init", "--name", pod_id, "--network", network,  # --init: a PID 1 that reaps orphans
@@ -134,7 +138,7 @@ class DockerPods:
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--memory", self.memory, "--cpus", self.cpus, "--pids-limit", "512",
             "-v", f"{folder / 'work'}:/work:ro", "-v", f"{folder / 'job'}:/job:ro",
-            "--label", f"doppel.pr={pr}", self.image,
+            "--label", f"doppel.pr={pr}", *self.labels, self.image,
         )  # fmt: skip
         self.pods[pod_id] = Pod(pod_id, pr, network, folder)
         log.info("pod %s for %s", pod_id, pr)
@@ -172,6 +176,21 @@ class DockerPods:
         docker("network", "rm", pod_id, check=False)
         shutil.rmtree(self.root / pod_id, ignore_errors=True)
         log.info("pod %s deleted", pod_id)
+
+    def sweep(self) -> None:
+        """Remove what an earlier process with this owner left behind: pods, forwarders, networks."""
+        if not self.owner:
+            return
+        label = f"label=doppel.owner={self.owner}"
+        containers = docker("ps", "-aq", "--filter", label, check=False).split()
+        if containers:
+            docker("rm", "-f", *containers, check=False)
+        networks = docker("network", "ls", "-q", "--filter", label, check=False).split()
+        for network in networks:
+            docker("network", "rm", network, check=False)
+        if containers or networks:
+            log.info("swept %d container(s) and %d network(s) left by an earlier process",
+                     len(containers), len(networks))  # fmt: skip
 
     def close(self) -> None:
         for pod_id in list(self.pods):

@@ -22,7 +22,8 @@ As of 2026-11-19 (Thursday). "Friday" in the spec is 2026-11-20.
 | 3 | Broker | Laptop | Steven and Troy each sign in to Codex once | DSV-3, 13 |
 | 4 | Gateway | Laptop | — | DSV-8 |
 | 5 | Sandbox: image, harness, pod per PR | Laptop (runc) | — | DSV-5, 6, 7, 9 |
-| 6 | GitHub: App, polling, posting | Laptop | Someone with org admin creates doppelwerk-dev; a sandbox repo | DSV-2, 10, 11 |
+| 6a | The runtime wired: config directory, intake, scheduler, sandbox | Laptop | — | Review #8; restart |
+| 6b | GitHub: App, polling, posting | Laptop | Someone with org admin creates doppelwerk-dev; a sandbox repo | DSV-2, 10, 11 |
 | 7 | Summini | Summini | Steven approves each install | gVisor, open question 7 |
 | 8 | The Friday demo | Summini | Troy: the BFF contract and UI | The demo list in the spec |
 | 9 | After the demo | Summini | — | Webhooks, API keys, idle cleanup |
@@ -129,11 +130,41 @@ Done when:
 - [x] A second head appears under `/work` without restarting the pod, and one reviewer is stopped while another keeps running.
 - [x] Review #5: a reviewer running as another user can't read a reviewer's capability.
 
-## 6. GitHub: App, polling, posting
+## 6a. The runtime wired
+
+**Done 2026-11-20.** `serve` runs every role once GitHub is configured, and everything but GitHub itself is real. The pieces:
+
+- **Directory:** read from the config file ([directory.py](../../src/control-plane/doppel_control_plane/directory.py)) until the BFF's records arrive. Its tenants, repos and reviewers are refused when a payer belongs to another tenant or a personal reviewer has no login.
+- **Read port:** `GitHubReader` in shared, in which every method is exactly one request.
+- **Intake:** [intake.py](../../src/control-plane/doppel_control_plane/intake.py) is a poller that diffs GitHub's listings against the ledger.
+- **Roles:**
+  - the scheduler ticks every 5 s;
+  - intake polls every 60 s;
+  - the sandbox is DockerPods, built from `[sandbox]`;
+  - a round that fails is logged and the next one runs on time.
+- **Restarts:** a restart sweeps the pods the last process left (labelled with this runtime's owner, so a second runtime's pods are untouched) and requeues their slots.
+- **Ledger:** schema version 4 keeps intake's comment cursor per repo.
+
+GitHub (reader and writer) is the only fake. `github.mode = "app"` is refused until 6b.
+
+Done when:
+- [x] Review #8: intake polls with repo listings, never per-person searches, under a calls-per-hour budget per installation.
+  - Passes run in priority order: PRs, then commands, then CI.
+  - A spent budget drops CI first and never the PR listing, and is logged once.
+  - Listings are paged.
+  - CI is read only while the merger waits on it.
+- [x] A new PR, a push, a review request added or removed, a merge, a draft and a command each become the right scheduler event; reading the same state twice changes nothing; a command is acted on once even when GitHub returns it again.
+- [x] Through the running roles, with fakes ([test_runtime_reviews.py](../../src/control-plane/tests/test_runtime_reviews.py)): a polled PR is reviewed and approved, and merging it deletes its pod. A payer with no sign-in blocks and says so once, then runs when they connect.
+- [x] With real containers ([tests/integration/test_runtime_docker.py](../../tests/integration/test_runtime_docker.py)): the runtime builds its own sandbox from the config, and a polled PR is reviewed by real Codex in a real pod. The gateway swaps in the payer's credential and counts the tokens, the merger approves on CI, merging deletes the pod, and `stop` leaves no container behind.
+- [x] A runtime that died without stopping leaves pods; the next start removes them.
+
+## 6b. GitHub: App, polling, posting
 
 - A new doppelwerk-dev GitHub App with only the permissions a reviewer needs (no `contents: write`), installed on one sandbox repo.
 - Installation tokens minted by the runtime and cached until shortly before expiry.
-- Intake: Doppelwerk's poller searches ported, run every 60 s against the installation.
+- Intake: 6a's poller, with a `GitHubReader` and a `GitHub` writer on the installation's token (repo listings, not Doppelwerk's searches: review #8).
+- The webhook route, checking `X-Hub-Signature-256` with the secret the runtime holds (review #7); the poll stays as the reconcile.
+- Clones of private repos with the installation token, never written into the mirror's config.
 - Posting: Doppelwerk's `verdict.schema.json`, `criticality.decide` and poster rules, through the gateway's posting route.
 
 Done when, on the sandbox repo:

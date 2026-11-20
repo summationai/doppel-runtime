@@ -108,7 +108,7 @@ def test_a_version_1_ledger_migrates_to_the_current_version(tmp_path):
     db.executescript(f"BEGIN; {V1} PRAGMA user_version=1; COMMIT;")
     db.close()
     led = Ledger(tmp_path / "old.db")
-    assert led.schema_version == SCHEMA_VERSION == 3
+    assert led.schema_version == SCHEMA_VERSION == 4
     cols = {r[1] for r in led._db.execute("PRAGMA table_info(slots)")}
     assert {"tokens_used", "token_budget", "provider_status", "provider_code", "provider_type"} <= cols
     led.close()
