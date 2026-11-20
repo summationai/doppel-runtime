@@ -33,6 +33,7 @@ from doppel_shared.types import (
     SlotState,
     Verdict,
 )
+from doppel_shared.verdict_schema import problems as verdict_problems
 
 from doppel_control_plane.core import commands as command_parser
 from doppel_control_plane.core import matching, merger
@@ -366,6 +367,9 @@ class Scheduler:
         slot = self.ledger.one("SELECT * FROM slots WHERE id=?", (slot_id,))
         if slot is None or slot["state"] != SlotState.RUNNING:
             return "ignored"
+        wrong = verdict_problems(raw)  # DSV-6: the runtime checks the whole schema before anything is posted
+        if wrong:
+            return self.slot_failed(slot_id, "invalid verdict: " + "; ".join(wrong[:5]), now)
         try:
             verdict = Verdict.parse(raw)
         except InvalidVerdict as e:
@@ -502,7 +506,8 @@ class Scheduler:
             (iso(now), capability_hash(capability), slot["id"]),
         )
         self.sandbox.start_reviewer(
-            pod_id, ReviewJob(slot["id"], slot["reviewer"], slot["head_sha"], capability, focus=focus)
+            pod_id,
+            ReviewJob(slot["id"], slot["reviewer"], slot["head_sha"], capability, focus=focus, pr=self._ref(pr)),
         )
 
     def _set_blocked(self, slot: Any) -> None:

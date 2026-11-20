@@ -5,6 +5,7 @@ description = "What runs inside a PR's pod: the harness and its image (checkpoin
 requires-python = ">=3.12"
 dependencies = [
     "doppel-shared",
+    "openai-codex==0.167.2",  # the Codex SDK and its binary, pinned with the image
 ]
 
 [tool.uv.sources]

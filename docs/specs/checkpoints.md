@@ -115,16 +115,19 @@ Done when:
 
 ## 5. Sandbox: image, harness, pod per PR
 
+**Done 2026-11-20, except one half-check.** `src/sandbox-runtime` (the image and the harness), `control-plane/pods.py` (the sandbox manager: a container per PR on its own `--internal` network, a one-target forwarder as `gateway`, `--init`, read-only root, no capabilities) and `control-plane/mirrors.py`. Each reviewer run is `docker exec` as its own Unix user, its capability only in its own environment (review #5). Live: [scripts/live_sandbox_check.py](../../scripts/live_sandbox_check.py) ran a real review in a pod on Steven's sign-in and found both bugs planted in the PR (two P1s, 34,660 tokens). Docker tests: [tests/integration/test_sandbox.py](../../tests/integration/test_sandbox.py). Three things found on the way: Codex's own sandbox can't run in a pod with no capabilities (it's off; the pod is the boundary), orphaned processes needed `--init` to be reaped, and a mirror's default branch isn't the PR's base (the diff now takes the base).
+
 - The image from the spec's table: Debian slim, non-root, read-only root, git, ripgrep, jq, the pinned Codex SDK and binary.
 - The harness: reads `/job`, starts or stops one reviewer at a time on request (one process or one thread per reviewer, from spike 0a), validates each verdict against `verdict.schema.json`, writes `/out/<reviewer>.json`, wipes the run's scratch folder.
 - The mirror: one bare `--filter=blob:none` clone per repo; a `git archive` checkout per head under a parent folder mounted read-only at `/work`.
 - Rules and guides from the base ref into `/job`.
 
 Done when:
-- [ ] A pod reviews a head of a local test repo and writes a verdict that passes the schema.
-- [ ] DSV-6 and DSV-7: inside the pod, `curl github.com` fails, no `gh` or GitHub token exists, and nothing from the PR has run (the test repo's `postinstall` canary never fires).
-- [ ] DSV-9: the head's `AGENTS.md` canary has no effect; the base's rules do.
-- [ ] A second head appears under `/work` without restarting the pod, and one reviewer is stopped while another keeps running.
+- [x] A pod reviews a head of a local test repo and writes a verdict that passes the schema (fake gateway in the Docker tests; real Codex and gateway live).
+- [x] DSV-6 and DSV-7: inside the pod, github.com and a raw IP fail, no `gh` or GitHub token exists, nothing from the PR has run (the `postinstall` canary never fires), the checkout and root are read-only, and no `.git` is there.
+- [x] DSV-9: the head's `AGENTS.md` canary never reaches the model. (The base's rules reach the reviewer as `instructions` in the job; reading them from the base comes with checkpoint 6.)
+- [x] A second head appears under `/work` without restarting the pod, and one reviewer is stopped while another keeps running.
+- [x] Review #5: a reviewer running as another user can't read a reviewer's capability.
 
 ## 6. GitHub: App, polling, posting
 

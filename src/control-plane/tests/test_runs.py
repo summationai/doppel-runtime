@@ -10,8 +10,8 @@ NOW = datetime(2026, 11, 20, 10, 0, tzinfo=UTC)
 def test_the_gateway_sees_only_running_slots_by_capability(tmp_path):
     ledger = Ledger(tmp_path / "l.db")
     runs = LedgerRuns(ledger)
-    pr = ledger.upsert_pr("summation", "summationai/sandbox", 42, head="aaa111")
-    slot, _ = ledger.queue_slot(pr, "aaa111", "steven", "review_requested", payer_user="u-steven")
+    pr = ledger.upsert_pr("summation", "summationai/sandbox", 42, head="aaa1111")
+    slot, _ = ledger.queue_slot(pr, "aaa1111", "steven", "review_requested", payer_user="u-steven")
     ledger.execute(
         "UPDATE slots SET state='running', started_at=?, capability_hash=?, token_budget=500 WHERE id=?",
         (iso(NOW), capability_hash("cap"), slot),

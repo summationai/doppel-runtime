@@ -36,7 +36,7 @@ class World:
             sql += " WHERE " + " AND ".join(f"{k}=?" for k in where)
         return self.ledger.rows(sql + " ORDER BY id", tuple(where.values()))
 
-    def slot(self, reviewer: str, head: str = "aaa111", command_id: str = ""):
+    def slot(self, reviewer: str, head: str = "aaa1111", command_id: str = ""):
         rows = self.slots(reviewer=reviewer, head_sha=head, command_id=command_id)
         assert len(rows) == 1, rows
         return rows[0]
@@ -45,12 +45,12 @@ class World:
         return self.ledger.one("SELECT * FROM prs WHERE pr=42")
 
     def open_with_steven(self, now=T0):
-        """#42 opened at aaa111, Troy requested Steven's review."""
-        self.s.pr_opened(PR, "aaa111", now)
+        """#42 opened at aaa1111, Troy requested Steven's review."""
+        self.s.pr_opened(PR, "aaa1111", now)
         self.s.review_requested(PR, "stevenliu", now)
 
     def finish(
-        self, reviewer: str, head: str = "aaa111", kind: str = "clean", findings=None, now=None, command_id: str = ""
+        self, reviewer: str, head: str = "aaa1111", kind: str = "clean", findings=None, now=None, command_id: str = ""
     ):
         slot = self.slot(reviewer, head, command_id)
         return self.s.verdict(slot["id"], verdict(reviewer, head, kind, findings), now or at(200))
@@ -84,7 +84,7 @@ def test_dsv_4_payer_never_changes_when_the_owner_is_capped_or_out_of_usage(w):
 
 
 def test_a_request_for_someone_without_a_personal_reviewer_queues_nothing(w):
-    w.s.pr_opened(PR, "aaa111", T0)
+    w.s.pr_opened(PR, "aaa1111", T0)
     assert w.s.review_requested(PR, "someone-else", T0) is None
     assert [s["reviewer"] for s in w.slots()] == ["repo-owner"]
 
@@ -169,10 +169,10 @@ def test_dsv_10_a_push_stops_old_reviewers_and_queues_the_new_head_in_the_same_p
     w.open_with_steven()
     w.s.tick(at(91))
     running = {s["id"] for s in w.slots(state="running")}
-    w.s.synchronize(PR, "bbb222", at(120))
+    w.s.synchronize(PR, "bbb2222", at(120))
     assert {slot_id for _, slot_id in w.sandbox.stopped} == running
-    assert {s["state"] for s in w.slots(head_sha="aaa111")} == {"cancelled"}
-    assert [s["reviewer"] for s in w.slots(head_sha="bbb222")] == ["repo-owner", "steven"]
+    assert {s["state"] for s in w.slots(head_sha="aaa1111")} == {"cancelled"}
+    assert [s["reviewer"] for s in w.slots(head_sha="bbb2222")] == ["repo-owner", "steven"]
     w.s.tick(at(120 + 91))
     assert {pod for pod, _ in w.sandbox.started} == {"pod-1"}
     assert w.sandbox.deleted == []
@@ -180,7 +180,7 @@ def test_dsv_10_a_push_stops_old_reviewers_and_queues_the_new_head_in_the_same_p
 
 def test_a_second_push_resets_the_settle_window(w):
     w.open_with_steven()
-    w.s.synchronize(PR, "bbb222", at(60))
+    w.s.synchronize(PR, "bbb2222", at(60))
     assert w.s.tick(at(100)) == []  # 40 s after the second push
     assert len(w.s.tick(at(151))) == 2
 
@@ -200,8 +200,8 @@ def test_a_verdict_for_a_stale_head_is_never_posted(w):
     w.open_with_steven()
     w.s.tick(at(91))
     slot_id = w.slot("steven")["id"]
-    w.ledger.execute("UPDATE prs SET current_head='bbb222'")  # the head moved under a running reviewer
-    assert w.s.verdict(slot_id, verdict("steven", "aaa111"), at(200)) == "stale"
+    w.ledger.execute("UPDATE prs SET current_head='bbb2222'")  # the head moved under a running reviewer
+    assert w.s.verdict(slot_id, verdict("steven", "aaa1111"), at(200)) == "stale"
     assert w.github.events() == []
 
 
@@ -222,7 +222,7 @@ def test_dsv_11_approves_once_every_reviewer_is_done_and_ci_is_green(w):
     w.open_with_steven()
     w.s.tick(at(91))
     w.finish("repo-owner")
-    w.s.ci(PR, "aaa111", "success", at(300))
+    w.s.ci(PR, "aaa1111", "success", at(300))
     assert w.github.events(merger_only=True) == []  # steven was requested: waited for
     assert w.ledger.value("SELECT reason FROM merges") == "waiting on steven"
     w.finish("steven", now=at(400))
@@ -233,7 +233,7 @@ def test_a_requested_review_is_waited_for_2_hours_then_not(w):
     w.open_with_steven()
     w.s.tick(at(91))
     w.finish("repo-owner")
-    w.s.ci(PR, "aaa111", "success", at(300))
+    w.s.ci(PR, "aaa1111", "success", at(300))
     w.s.tick(at(hours=1, minutes=59))
     assert w.github.events(merger_only=True) == []
     w.s.tick(at(hours=2, seconds=1))  # no event but the clock: tick decides again
@@ -246,7 +246,7 @@ def test_a_requested_reviewer_without_a_sign_in_holds_the_pr_at_most_2_hours(w):
     w.open_with_steven()
     w.s.tick(at(91))
     w.finish("repo-owner")
-    w.s.ci(PR, "aaa111", "success", at(300))
+    w.s.ci(PR, "aaa1111", "success", at(300))
     assert w.slot("steven")["state"] == "blocked"
     assert w.github.events(merger_only=True) == []
     w.s.tick(at(hours=2, seconds=1))
@@ -257,7 +257,7 @@ def test_each_requested_reviewer_has_its_own_clock(w):
     w.open_with_steven()  # steven queued at T0
     w.s.tick(at(91))
     w.finish("repo-owner")
-    w.s.ci(PR, "aaa111", "success", at(300))
+    w.s.ci(PR, "aaa1111", "success", at(300))
     w.s.review_requested(PR, "troyb", at(hours=1))  # troy queued an hour later
     w.s.tick(at(hours=2, seconds=1))  # steven's clock is out, troy's isn't
     assert w.ledger.value("SELECT reason FROM merges") == "waiting on troy"
@@ -268,7 +268,7 @@ def test_each_requested_reviewer_has_its_own_clock(w):
 def test_dsv_11_a_personal_reviewers_p1_blocks_with_a_comment(w):
     w.open_with_steven()
     w.s.tick(at(91))
-    w.s.ci(PR, "aaa111", "success", at(100))
+    w.s.ci(PR, "aaa1111", "success", at(100))
     w.finish("steven", kind="changes_requested", findings=[finding("F1", "P1")])
     w.finish("repo-owner")
     assert w.github.events(merger_only=True) == ["COMMENT"]
@@ -278,7 +278,7 @@ def test_dsv_11_a_personal_reviewers_p1_blocks_with_a_comment(w):
 def test_dsv_11_a_person_resolving_the_p1_unblocks_with_no_model_run(w):
     w.open_with_steven()
     w.s.tick(at(91))
-    w.s.ci(PR, "aaa111", "success", at(100))
+    w.s.ci(PR, "aaa1111", "success", at(100))
     w.finish("steven", kind="changes_requested", findings=[finding("F1", "P1")])
     w.finish("repo-owner")
     starts = len(w.sandbox.started)
@@ -289,7 +289,7 @@ def test_dsv_11_a_person_resolving_the_p1_unblocks_with_no_model_run(w):
 
 def test_a_finding_raised_again_after_its_disposition_is_open_again(w):
     w.open_with_steven()
-    w.s.ci(PR, "aaa111", "success", at(100))
+    w.s.ci(PR, "aaa1111", "success", at(100))
     w.s.disposition(PR, "steven", "F1", "resolved", "troyb", at(150))
     w.s.tick(at(91))
     w.finish("repo-owner")
@@ -300,7 +300,7 @@ def test_a_finding_raised_again_after_its_disposition_is_open_again(w):
 def test_a_pre_existing_p1_is_advisory(w):
     w.open_with_steven()
     w.s.tick(at(91))
-    w.s.ci(PR, "aaa111", "success", at(100))
+    w.s.ci(PR, "aaa1111", "success", at(100))
     w.finish("steven", kind="changes_requested", findings=[finding("F1", "P1", introduced=False)])
     w.finish("repo-owner")
     assert w.github.events(merger_only=True) == ["APPROVE"]
@@ -311,7 +311,7 @@ def test_dsv_11_red_ci_blocks(w):
     w.s.tick(at(91))
     w.finish("repo-owner")
     w.finish("steven")
-    w.s.ci(PR, "aaa111", "failure", at(300))
+    w.s.ci(PR, "aaa1111", "failure", at(300))
     assert w.ledger.value("SELECT decision FROM merges") == "blocked"
 
 
@@ -320,12 +320,12 @@ def test_dsv_11_a_push_dismisses_the_approval(w):
     w.s.tick(at(91))
     w.finish("repo-owner")
     w.finish("steven")
-    w.s.ci(PR, "aaa111", "success", at(300))
+    w.s.ci(PR, "aaa1111", "success", at(300))
     approval = w.github.reviews[-1].review_id
-    w.s.synchronize(PR, "bbb222", at(400))
+    w.s.synchronize(PR, "bbb2222", at(400))
     assert w.github.dismissed == [approval]
-    assert w.ledger.value("SELECT decision FROM merges WHERE head_sha='aaa111'") == "dismissed"
-    assert w.ledger.value("SELECT decision FROM merges WHERE head_sha='bbb222'") == "waiting_reviews"
+    assert w.ledger.value("SELECT decision FROM merges WHERE head_sha='aaa1111'") == "dismissed"
+    assert w.ledger.value("SELECT decision FROM merges WHERE head_sha='bbb2222'") == "waiting_reviews"
 
 
 def test_the_merger_posts_only_when_its_decision_changes(w):
@@ -333,9 +333,9 @@ def test_the_merger_posts_only_when_its_decision_changes(w):
     w.s.tick(at(91))
     w.finish("repo-owner")
     w.finish("steven")
-    w.s.ci(PR, "aaa111", "success", at(300))
+    w.s.ci(PR, "aaa1111", "success", at(300))
     for i in range(3):
-        w.s.ci(PR, "aaa111", "success", at(310 + i))
+        w.s.ci(PR, "aaa1111", "success", at(310 + i))
         w.s.merge(w.pr()["id"], at(320 + i))
     assert w.github.events(merger_only=True) == ["APPROVE"]
     assert len(w.github.statuses) == 1  # one status comment, edited in place
@@ -415,7 +415,7 @@ def test_dsv_4_troy_commanding_stevens_reviewer_runs_on_stevens_sign_in(w):
 
 
 def test_dsv_4_a_command_for_someone_not_requested_is_refused(w):
-    w.s.pr_opened(PR, "aaa111", T0)  # nobody requested Steven
+    w.s.pr_opened(PR, "aaa1111", T0)  # nobody requested Steven
     assert w.s.command(PR, "c1", "troyb", "MEMBER", "@doppelwerk review steven", at(5)) == "refused"
     assert w.github.replies[-1] == "steven isn't requested on this PR. Request their review first."
     assert w.slots(reviewer="steven") == []
@@ -424,9 +424,9 @@ def test_dsv_4_a_command_for_someone_not_requested_is_refused(w):
 def test_command_slots_follow_the_head(w):
     w.open_with_steven()
     w.s.command(PR, "c1", "troyb", "MEMBER", "@doppelwerk review steven", at(5))
-    w.s.synchronize(PR, "bbb222", at(20))
-    assert w.slot("steven", "aaa111", "c1")["state"] == "cancelled"
-    assert w.slot("steven", "bbb222", "c1")["state"] == "queued"
+    w.s.synchronize(PR, "bbb2222", at(20))
+    assert w.slot("steven", "aaa1111", "c1")["state"] == "cancelled"
+    assert w.slot("steven", "bbb2222", "c1")["state"] == "queued"
 
 
 def test_a_failing_command_review_retries_then_replies(w):
@@ -457,7 +457,7 @@ def test_a_pr_idle_for_3_days_loses_its_pod_and_a_command_brings_it_back(w):
     w.s.command(PR, "c1", "troyb", "MEMBER", "@doppelwerk review steven", at(days=4))
     w.s.tick(at(days=4, seconds=1))
     assert w.pr()["state"] == "open" and w.pr()["pod_id"] == "pod-2"
-    assert w.sandbox.started[-1][1].head_sha == "aaa111"
+    assert w.sandbox.started[-1][1].head_sha == "aaa1111"
 
 
 def test_dsv_11_red_ci_after_approval_withdraws_it_on_the_same_head(w):
@@ -466,9 +466,9 @@ def test_dsv_11_red_ci_after_approval_withdraws_it_on_the_same_head(w):
     w.s.tick(at(91))
     w.finish("repo-owner")
     w.finish("steven")
-    w.s.ci(PR, "aaa111", "success", at(300))
+    w.s.ci(PR, "aaa1111", "success", at(300))
     approval = w.github.reviews[-1].review_id
-    w.s.ci(PR, "aaa111", "failure", at(400))  # a re-run goes red; no push
+    w.s.ci(PR, "aaa1111", "failure", at(400))  # a re-run goes red; no push
     assert w.github.dismissed == [approval]
     assert w.github.events(merger_only=True) == ["APPROVE", "COMMENT"]
     assert w.ledger.value("SELECT decision FROM merges") == "blocked"
@@ -478,7 +478,7 @@ def test_dsv_11_a_p1_after_the_grace_period_withdraws_the_approval(w):
     w.open_with_steven()
     w.s.tick(at(91))
     w.finish("repo-owner")
-    w.s.ci(PR, "aaa111", "success", at(300))
+    w.s.ci(PR, "aaa1111", "success", at(300))
     w.s.tick(at(hours=2, seconds=1))  # steven no longer waited for: approved
     approval = w.github.reviews[-1].review_id
     w.finish("steven", kind="changes_requested", findings=[finding("F1", "P1")], now=at(hours=2, minutes=5))
