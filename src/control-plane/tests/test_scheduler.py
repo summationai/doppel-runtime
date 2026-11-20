@@ -205,6 +205,19 @@ def test_a_verdict_for_a_stale_head_is_never_posted(w):
     assert w.github.events() == []
 
 
+def test_dsv_6_an_invalid_verdict_is_never_posted_and_counts_as_a_failed_attempt(w):
+    """The pod is untrusted: the runtime checks the whole schema again before anything reaches GitHub."""
+    w.open_with_steven()
+    w.s.tick(at(91))
+    slot_id = w.slot("steven")["id"]
+    bad = verdict("steven", "aaa1111", "changes_requested", [finding("F1", "P1")])
+    bad["findings"][0]["category"] = "bogus"  # parses, but the schema refuses it
+    bad["findings"][0]["line"] = 0
+    assert w.s.verdict(slot_id, bad, at(200)) == "queued"  # retried: attempt 1 of 3
+    assert w.github.reviews == []
+    assert w.ledger.value("SELECT capability_hash FROM slots WHERE id=?", (slot_id,)) is None
+
+
 # ---- reviewers post; the merger decides (DSV-11) -------------------------------------------------------
 
 
