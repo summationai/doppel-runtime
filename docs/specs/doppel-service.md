@@ -7,6 +7,8 @@ Doppel as a service turns Doppelwerk, which reviews Summation's PRs from one Mac
 
 This repo is the **doppel runtime**: the one place where work happens and secrets live. The UI and the BFF are Troy's.
 
+What is built so far, feature by feature, with its locked decisions: [built/](built/README.md). This document is the design and can run ahead of the code.
+
 ## 1. Decisions
 
 1. **The POC is Codex only.** Claude waits for Anthropic's answer (see [section 12](#12-vendor-terms)).

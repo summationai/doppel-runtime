@@ -56,6 +56,7 @@ Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [s
 
 ## Docs
 
+- [docs/specs/built/](docs/specs/built/): what the runtime does today, one file per feature, with its locked decisions and the tests that hold them.
 - [docs/specs/doppel-service.md](docs/specs/doppel-service.md): the spec. Decisions, scheduler, sandbox, credentials, rules (DSV-1 to DSV-14), the Friday demo and open questions.
 - [docs/reviews/](docs/reviews/): review findings and what we decided to do with each.
 - [docs/github-app.md](docs/github-app.md): creating the GitHub App, connecting the runtime to it, and checking it.
