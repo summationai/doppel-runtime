@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -14,12 +15,19 @@ class MergeState(StrEnum):
 
 @dataclass(frozen=True)
 class ReviewerStatus:
-    """One reviewer on the PR, as the merger sees it for the current head."""
+    """One reviewer on the PR, as the merger sees it for the current head.
+
+    App reviewers are always required. A requested personal reviewer is required until `wait_until`
+    (its grace period), after which the merger stops waiting for it; its P0/P1s still block whenever
+    they arrive.
+    """
 
     reviewer: str
-    required: bool
+    app: bool  # the app's own reviewer (repo-owner), as opposed to a requested person's
+    required: bool  # the merger waits for this reviewer's verdict on the current head
     status: str  # posted | running | queued | blocked | waiting
     verdict: str | None = None  # the verdict on the current head, once posted
+    wait_until: datetime | None = None  # personal: when the merger stops waiting for it
 
 
 @dataclass(frozen=True)

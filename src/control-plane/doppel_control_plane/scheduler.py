@@ -435,6 +435,12 @@ class Scheduler:
         Returns the ids of the slots it started.
         """
         self._reap_idle(now)
+        # A requested person's grace period can run out with no event at all: decide again.
+        for row in self.ledger.rows(
+            "SELECT p.id FROM prs p JOIN merges m ON m.pr_id = p.id AND m.head_sha = p.current_head "
+            "WHERE p.state = 'open' AND m.decision = 'waiting_reviews'"
+        ):
+            self.merge(row["id"], now)
         running = self.ledger.rows("SELECT payer_user FROM slots WHERE state='running'")
         host_running = len(running)
         payer_running: dict[str, int] = {}
@@ -538,12 +544,23 @@ class Scheduler:
 
     # ---- the merger --------------------------------------------------------------------------------
 
-    def merge_input(self, pr_id: int) -> MergeInput:
+    def merge_input(self, pr_id: int, now: datetime) -> MergeInput:
         pr = self._pr(pr_id)
         head = pr["current_head"]
         reviewers, blocking = [], []
         for row in self.ledger.rows("SELECT * FROM pr_reviewers WHERE pr_id=? ORDER BY reviewer", (pr_id,)):
             handle = row["reviewer"]
+            app = row["source"] == "app"
+            # A requested person's review is waited for until its grace period, counted from when it was
+            # first queued on this head; then the merger stops waiting for it.
+            first_queued = parse_iso(
+                self.ledger.value(
+                    "SELECT min(queued_at) FROM slots WHERE pr_id=? AND head_sha=? AND reviewer=?",
+                    (pr_id, head, handle),
+                )
+            )
+            wait_until = None if app or first_queued is None else first_queued + self.limits.requested_grace
+            required = app or (wait_until is not None and now < wait_until)
             latest = self.ledger.one(
                 "SELECT * FROM slots WHERE pr_id=? AND head_sha=? AND reviewer=? AND state='posted' "
                 "ORDER BY finished_at DESC, id DESC LIMIT 1",
@@ -551,7 +568,7 @@ class Scheduler:
             )
             if latest is not None:
                 verdict = Verdict.parse(json.loads(latest["verdict"]))
-                reviewers.append(ReviewerStatus(handle, row["source"] == "app", "posted", verdict.verdict))
+                reviewers.append(ReviewerStatus(handle, app, required, "posted", verdict.verdict, wait_until))
                 for f in verdict.findings:
                     if f.blocking and not self._closed_by_person(pr_id, handle, f.id, latest["finished_at"]):
                         blocking.append(OpenFinding(handle, f.id, f.severity, f.file, f.line, f.claim))
@@ -563,7 +580,7 @@ class Scheduler:
                 )
             }
             status = next((s for s in ("running", "queued", "blocked") if s in states), "waiting")
-            reviewers.append(ReviewerStatus(handle, row["source"] == "app", status, None))
+            reviewers.append(ReviewerStatus(handle, app, required, status, None, wait_until))
         ci = self.ledger.value("SELECT state FROM ci_status WHERE pr_id=? AND head_sha=?", (pr_id, head))
         return MergeInput(head, tuple(reviewers), ci, tuple(blocking))
 
@@ -580,7 +597,7 @@ class Scheduler:
         if pr is None or pr["state"] in (PRState.MERGED, PRState.CLOSED) or not pr["current_head"]:
             return None
         ref = self._ref(pr)
-        inp = self.merge_input(pr_id)
+        inp = self.merge_input(pr_id, now)
         decision = merger.decide(inp)
         prev = self.ledger.one("SELECT * FROM merges WHERE pr_id=? AND head_sha=?", (pr_id, inp.head))
         prev_state = prev["decision"] if prev else None

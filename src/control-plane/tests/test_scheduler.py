@@ -216,13 +216,51 @@ def test_reviewers_only_comment(w):
     assert w.ledger.value("SELECT comment_id FROM finding_anchors WHERE fid='F1'") is not None
 
 
-def test_dsv_11_approves_once_the_required_reviewer_is_done_and_ci_is_green(w):
+def test_dsv_11_approves_once_every_reviewer_is_done_and_ci_is_green(w):
     w.open_with_steven()
     w.s.tick(at(91))
     w.finish("repo-owner")
-    assert w.github.events(merger_only=True) == []  # waiting on CI
     w.s.ci(PR, "aaa111", "success", at(300))
-    assert w.github.events(merger_only=True) == ["APPROVE"]  # steven still running: not required
+    assert w.github.events(merger_only=True) == []  # steven was requested: waited for
+    assert w.ledger.value("SELECT reason FROM merges") == "waiting on steven"
+    w.finish("steven", now=at(400))
+    assert w.github.events(merger_only=True) == ["APPROVE"]
+
+
+def test_a_requested_review_is_waited_for_2_hours_then_not(w):
+    w.open_with_steven()
+    w.s.tick(at(91))
+    w.finish("repo-owner")
+    w.s.ci(PR, "aaa111", "success", at(300))
+    w.s.tick(at(hours=1, minutes=59))
+    assert w.github.events(merger_only=True) == []
+    w.s.tick(at(hours=2, seconds=1))  # no event but the clock: tick decides again
+    assert w.github.events(merger_only=True) == ["APPROVE"]
+    assert "steven running (not waited for)" in w.github.status
+
+
+def test_a_requested_reviewer_without_a_sign_in_holds_the_pr_at_most_2_hours(w):
+    w.directory.signed.discard("u-steven")
+    w.open_with_steven()
+    w.s.tick(at(91))
+    w.finish("repo-owner")
+    w.s.ci(PR, "aaa111", "success", at(300))
+    assert w.slot("steven")["state"] == "blocked"
+    assert w.github.events(merger_only=True) == []
+    w.s.tick(at(hours=2, seconds=1))
+    assert w.github.events(merger_only=True) == ["APPROVE"]
+
+
+def test_each_requested_reviewer_has_its_own_clock(w):
+    w.open_with_steven()  # steven queued at T0
+    w.s.tick(at(91))
+    w.finish("repo-owner")
+    w.s.ci(PR, "aaa111", "success", at(300))
+    w.s.review_requested(PR, "troyb", at(hours=1))  # troy queued an hour later
+    w.s.tick(at(hours=2, seconds=1))  # steven's clock is out, troy's isn't
+    assert w.ledger.value("SELECT reason FROM merges") == "waiting on troy"
+    w.s.tick(at(hours=3, seconds=1))
+    assert w.github.events(merger_only=True) == ["APPROVE"]
 
 
 def test_dsv_11_a_personal_reviewers_p1_blocks_with_a_comment(w):
@@ -270,6 +308,7 @@ def test_dsv_11_red_ci_blocks(w):
     w.open_with_steven()
     w.s.tick(at(91))
     w.finish("repo-owner")
+    w.finish("steven")
     w.s.ci(PR, "aaa111", "failure", at(300))
     assert w.ledger.value("SELECT decision FROM merges") == "blocked"
 
@@ -278,6 +317,7 @@ def test_dsv_11_a_push_dismisses_the_approval(w):
     w.open_with_steven()
     w.s.tick(at(91))
     w.finish("repo-owner")
+    w.finish("steven")
     w.s.ci(PR, "aaa111", "success", at(300))
     approval = w.github.reviews[-1].review_id
     w.s.synchronize(PR, "bbb222", at(400))
@@ -290,6 +330,7 @@ def test_the_merger_posts_only_when_its_decision_changes(w):
     w.open_with_steven()
     w.s.tick(at(91))
     w.finish("repo-owner")
+    w.finish("steven")
     w.s.ci(PR, "aaa111", "success", at(300))
     for i in range(3):
         w.s.ci(PR, "aaa111", "success", at(310 + i))
@@ -302,7 +343,9 @@ def test_the_status_comment_shows_each_reviewer(w):
     w.open_with_steven()
     w.s.tick(at(91))
     w.finish("repo-owner")
-    assert w.github.status == "**waiting ci** · repo-owner ✓ · steven running · CI not started"
+    assert w.github.status == (
+        "**waiting reviews** · repo-owner ✓ · steven running (waited for until 12:00 UTC) · CI not started"
+    )
 
 
 # ---- commands ----------------------------------------------------------------------------------------
@@ -420,6 +463,7 @@ def test_dsv_11_red_ci_after_approval_withdraws_it_on_the_same_head(w):
     w.open_with_steven()
     w.s.tick(at(91))
     w.finish("repo-owner")
+    w.finish("steven")
     w.s.ci(PR, "aaa111", "success", at(300))
     approval = w.github.reviews[-1].review_id
     w.s.ci(PR, "aaa111", "failure", at(400))  # a re-run goes red; no push
@@ -428,12 +472,13 @@ def test_dsv_11_red_ci_after_approval_withdraws_it_on_the_same_head(w):
     assert w.ledger.value("SELECT decision FROM merges") == "blocked"
 
 
-def test_dsv_11_a_late_p1_after_approval_withdraws_it(w):
+def test_dsv_11_a_p1_after_the_grace_period_withdraws_the_approval(w):
     w.open_with_steven()
     w.s.tick(at(91))
     w.finish("repo-owner")
     w.s.ci(PR, "aaa111", "success", at(300))
+    w.s.tick(at(hours=2, seconds=1))  # steven no longer waited for: approved
     approval = w.github.reviews[-1].review_id
-    w.finish("steven", kind="changes_requested", findings=[finding("F1", "P1")], now=at(400))
+    w.finish("steven", kind="changes_requested", findings=[finding("F1", "P1")], now=at(hours=2, minutes=5))
     assert w.github.dismissed == [approval]
     assert w.ledger.value("SELECT decision FROM merges") == "blocked"
