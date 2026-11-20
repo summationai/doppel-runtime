@@ -19,6 +19,7 @@ class Limits:
     host_cap: int = 10  # running slots on the host
     idle_after: timedelta = timedelta(days=3)  # a PR's pod is deleted after this long with no review
     max_attempts: int = 3
+    requested_grace: timedelta = timedelta(hours=2)  # the merger waits this long for a requested person's review
 
 
 @dataclass(frozen=True)

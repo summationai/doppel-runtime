@@ -3,12 +3,15 @@
 Reviewers only comment. For the PR's current head, in order:
 
 1. Every required reviewer has a verdict on this head?        else waiting_reviews
-2. A required reviewer stood down?                             blocked: a person has to review
+   (app reviewers always; a requested person's for up to 2 hours, then not waited for)
+2. An app reviewer stood down?                                 blocked: a person has to review
 3. CI finished and green?                                      else waiting_ci, or blocked when red
 4. Any open P0/P1 from any reviewer (personal ones included)?   blocked
 5. Otherwise                                                    approved
 
-A PR with no required reviewer is never approved: nobody the app trusts has looked at it.
+A PR with no app reviewer is never approved: nobody the app trusts has looked at it. For the POC the
+only finding guard is P0/P1; Doppelwerk's other guards (partial reads, drafts, critical paths,
+trust) come later.
 """
 
 from __future__ import annotations
@@ -19,13 +22,12 @@ _MARK = {"clean": "✓", "comments": "✓", "changes_requested": "✗", "stood_d
 
 
 def decide(inp: MergeInput) -> Decision:
-    required = [r for r in inp.reviewers if r.required]
-    if not required:
+    if not any(r.app for r in inp.reviewers):
         return Decision(MergeState.WAITING_REVIEWS, "no app reviewer on this PR, so nothing can approve it")
-    missing = [r.reviewer for r in required if r.verdict is None]
+    missing = [r.reviewer for r in inp.reviewers if r.required and r.verdict is None]
     if missing:
         return Decision(MergeState.WAITING_REVIEWS, "waiting on " + ", ".join(missing))
-    stood = [r.reviewer for r in required if r.verdict == "stood_down"]
+    stood = [r.reviewer for r in inp.reviewers if r.app and r.verdict == "stood_down"]
     if stood:
         return Decision(MergeState.BLOCKED, ", ".join(stood) + " stood down: a person has to review this PR")
     if inp.ci in (None, "pending"):
@@ -47,14 +49,22 @@ def _findings_line(inp: MergeInput) -> str:
 
 def status_text(inp: MergeInput, decision: Decision) -> str:
     """The one-line state of the PR, kept current in the merger's status comment."""
-    reviewers = [
-        f"{r.reviewer} {_MARK.get(r.verdict or '', r.status)}" for r in sorted(inp.reviewers, key=lambda r: r.reviewer)
-    ]
+    reviewers = [_reviewer_text(r) for r in sorted(inp.reviewers, key=lambda r: r.reviewer)]
     ci = {None: "CI not started", "pending": "CI pending", "success": "CI green"}.get(inp.ci, "CI failed")
     parts = [*reviewers, ci]
     if inp.blocking:
         parts.append(_findings_line(inp))
     return f"**{decision.state.value.replace('_', ' ')}** · " + " · ".join(parts)
+
+
+def _reviewer_text(r) -> str:
+    if r.verdict is not None:
+        return f"{r.reviewer} {_MARK.get(r.verdict, r.verdict)}"
+    if r.app:
+        return f"{r.reviewer} {r.status}"
+    if r.required and r.wait_until is not None:
+        return f"{r.reviewer} {r.status} (waited for until {r.wait_until:%H:%M} UTC)"
+    return f"{r.reviewer} {r.status} (not waited for)"
 
 
 def review_body(inp: MergeInput, decision: Decision) -> str:
