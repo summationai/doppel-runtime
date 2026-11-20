@@ -2,6 +2,9 @@
 
 The runtime fetches; the pod never does (it has no GitHub credential and no route to GitHub).
 A head's checkout is `git archive` of that commit, so `.git` never enters the pod.
+
+Reviewers on one PR start together, each preparing in its own thread: everything that touches a
+mirror holds that repo's lock, or two clones (or two fetches into the same ref) collide.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 SHA = re.compile(r"^[0-9a-f]{7,40}$")
@@ -30,6 +34,12 @@ class Mirrors:
     def __init__(self, root: Path, *, partial: bool = True):
         self.root = root
         self.partial = partial  # --filter=blob:none, as Doppelwerk does (off for servers that refuse filters)
+        self._locks: dict[str, threading.Lock] = {}
+        self._guard = threading.Lock()
+
+    def _lock(self, repo: str) -> threading.Lock:
+        with self._guard:
+            return self._locks.setdefault(repo, threading.Lock())
 
     def path(self, repo: str) -> Path:
         owner, _, name = repo.partition("/")
@@ -40,6 +50,10 @@ class Mirrors:
     def sync(self, repo: str, url: str, pr_number: int, pr_ref: str) -> None:
         """Clone if needed; fetch every branch and the PR's head (`pr_ref`) into refs/doppel/pr/<n>."""
         mirror = self.path(repo)
+        with self._lock(repo):
+            self._sync(mirror, url, pr_number, pr_ref)
+
+    def _sync(self, mirror: Path, url: str, pr_number: int, pr_ref: str) -> None:
         if not mirror.exists():
             self.root.mkdir(parents=True, exist_ok=True)
             _git("clone", "--bare", *(["--filter=blob:none"] if self.partial else []), url, str(mirror))
@@ -53,6 +67,10 @@ class Mirrors:
         """Write the commit's files to `dest` (once): no .git, nothing else of the repo."""
         if not SHA.match(sha):
             raise MirrorError(f"not a commit: {sha!r}")
+        with self._lock(repo):
+            return self._checkout(repo, sha, dest)
+
+    def _checkout(self, repo: str, sha: str, dest: Path) -> Path:
         if dest.is_dir():
             return dest
         dest.parent.mkdir(parents=True, exist_ok=True)
