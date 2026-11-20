@@ -152,5 +152,12 @@ ALTER TABLE slots ADD COLUMN tokens_used INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE slots ADD COLUMN token_budget INTEGER;  -- null: the gateway's default
 """
 
-MIGRATIONS = {1: V1, 2: V2}
+# Review #3: the provider's own answer, so a refused key is never mistaken for a usage limit.
+V3 = """
+ALTER TABLE slots ADD COLUMN provider_status INTEGER;
+ALTER TABLE slots ADD COLUMN provider_code TEXT;
+ALTER TABLE slots ADD COLUMN provider_type TEXT;
+"""
+
+MIGRATIONS = {1: V1, 2: V2, 3: V3}
 SCHEMA_VERSION = max(MIGRATIONS)

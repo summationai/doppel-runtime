@@ -31,6 +31,10 @@ def test_the_gateway_sees_only_running_slots_by_capability(tmp_path):
     runs.record_usage_reset("u-steven", NOW + timedelta(hours=1))
     assert ledger.value("SELECT reset_at FROM usage_resets") == iso(NOW + timedelta(hours=1))
 
+    runs.provider_error(slot, 401, "token_revoked", "invalid_request_error")
+    row = ledger.one("SELECT provider_status, provider_code, provider_type FROM slots WHERE id=?", (slot,))
+    assert tuple(row) == (401, "token_revoked", "invalid_request_error")
+
     ledger.execute("UPDATE slots SET state='posted' WHERE id=?", (slot,))
     assert runs.running(capability_hash("cap")) is None
     ledger.close()

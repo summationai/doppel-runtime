@@ -28,3 +28,8 @@ class Runs(Protocol):
     def record_usage_reset(self, payer: str, reset_at: datetime) -> None:
         """The payer hit their usage window: their runs wait until `reset_at` (DSV-12)."""
         ...
+
+    def provider_error(self, slot_id: int, status: int, code: str | None, kind: str | None) -> None:
+        """The provider's own answer to a run's call, when it wasn't a success: its HTTP status and the
+        error's `code` and `type`, so a refused key is never mistaken for a usage limit."""
+        ...

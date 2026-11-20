@@ -24,3 +24,9 @@ class LedgerRuns:
 
     def record_usage_reset(self, payer: str, reset_at: datetime) -> None:
         self.ledger.record_usage_reset(payer, reset_at)
+
+    def provider_error(self, slot_id: int, status: int, code: str | None, kind: str | None) -> None:
+        self.ledger.execute(
+            "UPDATE slots SET provider_status=?, provider_code=?, provider_type=? WHERE id=?",
+            (status, code, kind, slot_id),
+        )

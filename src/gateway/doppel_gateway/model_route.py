@@ -128,20 +128,34 @@ class ModelRoute:
                 resp.release()
                 resp = await send(await self.credentials.refresh(payer))
         except NotSignedIn as e:
-            log.error("slot %s: payer %s has no sign-in (%s)", run.slot_id, payer, e)
-            return refuse(503, "not_signed_in", "this run's payer has no working sign-in")
+            log.error("slot %s: payer %s has no working sign-in (%s)", run.slot_id, payer, e)
+            self.runs.provider_error(run.slot_id, 401, "not_signed_in", "credential")
+            return reconnect(payer)
         except aiohttp.ClientError as e:
             log.warning("slot %s: upstream unreachable (%r)", run.slot_id, e)
             return refuse(502, "upstream_unreachable", "the model provider couldn't be reached")
 
         passthrough = {k: v for k, v in resp.headers.items() if k.lower().startswith(PASS_PREFIXES)}
-        if resp.status == 429:
+        if resp.status >= 400:
             data = await resp.read()
-            reset = usage_reset(data, resp.headers, self.clock())
-            if reset is not None:
-                self.runs.record_usage_reset(payer, reset)
-                log.warning("slot %s: payer %s hit their usage window; resets %s", run.slot_id, payer, reset)
-            return web.Response(status=429, body=data, headers=passthrough)
+            resp.release()
+            code, kind = error_fields(data)
+            self.runs.provider_error(run.slot_id, resp.status, code, kind)
+            if resp.status in (401, 403):
+                # Refused even after a refresh, or forbidden outright: the sign-in is dead until the
+                # person signs in again. Decided by the status, never by the message's wording.
+                self.credentials.rejected(payer, f"{resp.status} {code or kind or ''}".strip())
+                log.error("slot %s: the provider refused payer %s's credential (%s %s)", run.slot_id, payer,
+                          resp.status, code or kind)  # fmt: skip
+                return reconnect(payer)
+            if resp.status == 429:
+                reset = usage_reset(data, resp.headers, self.clock())
+                if reset is not None:
+                    self.runs.record_usage_reset(payer, reset)
+                    log.warning("slot %s: payer %s hit their usage window; resets %s", run.slot_id, payer, reset)
+            else:
+                log.warning("slot %s: the provider answered %s (%s)", run.slot_id, resp.status, code or kind)
+            return web.Response(status=resp.status, body=data, headers=passthrough)
 
         out = web.StreamResponse(status=resp.status, headers=passthrough)
         await out.prepare(request)
@@ -159,6 +173,24 @@ class ModelRoute:
             log.info("slot %s payer %s: %s /%s -> %s (%d tokens)", run.slot_id, payer, request.method, path,
                      resp.status, counter.tokens)  # fmt: skip
         return out
+
+
+def reconnect(payer: str) -> web.Response:
+    """The payer's sign-in doesn't work: Codex shows this, and the run fails without retrying."""
+    return refuse(401, "credential_expired", f"{payer}'s Codex sign-in was refused: reconnect Codex")
+
+
+def error_fields(body: bytes) -> tuple[str | None, str | None]:
+    """The provider's error `code` and `type`, from OpenAI's error shape or ChatGPT's `detail`."""
+    try:
+        data = json.loads(body) or {}
+    except (ValueError, TypeError):
+        return None, None
+    error = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(error, dict):
+        error = data.get("detail") if isinstance(data, dict) and isinstance(data.get("detail"), dict) else {}
+    code, kind = error.get("code"), error.get("type")
+    return (str(code) if code else None), (str(kind) if kind else None)
 
 
 def usage_reset(body: bytes, headers: Any, now: datetime) -> datetime | None:

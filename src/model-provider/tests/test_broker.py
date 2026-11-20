@@ -87,7 +87,22 @@ async def test_a_failed_refresh_is_not_signed_in_and_shows_in_status(world):
     account.fail = True
     with pytest.raises(NotSignedIn):
         await broker.refresh(STEVEN)
-    assert broker.status(STEVEN)["state"] == "refresh_failed"
+    assert broker.status(STEVEN)["state"] == "expired"
+
+
+async def test_a_sign_in_the_provider_refused_is_expired_until_signed_in_again(world):
+    homes, account, broker = world
+    sign_in(homes, TROY)
+    broker.rejected(TROY, "401 token_revoked")
+    assert broker.status(TROY)["state"] == "expired"
+    assert broker.status(TROY)["error"] == "refused by the provider: 401 token_revoked"
+    with pytest.raises(NotSignedIn):  # not handed out again
+        await broker.credential(TROY)
+    await broker.login(TROY)
+    account.approve.set()
+    assert await broker.wait_for_login(TROY)
+    assert broker.status(TROY)["state"] == "connected"
+    assert (await broker.credential(TROY)).headers["authorization"] == "Bearer secret-v1"
 
 
 async def test_keep_fresh_refreshes_only_sign_ins_6_hours_old(world):

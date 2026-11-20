@@ -84,6 +84,8 @@ Done when, as table-driven tests:
 
 ## 3. Broker
 
+**Done 2026-11-20, except Troy's sign-in.** `src/model-provider`; sign-ins on disk at `<data_dir>/tenants/<tenant>/<user>/codex/` (temporary store). Live: [scripts/live_broker_check.py](../../scripts/live_broker_check.py) passed every step for Steven, and caught a bug first (`make_home` didn't create missing parent folders).
+
 steven-universe's broker, per user. Reuse its code where it fits.
 
 - A `CODEX_HOME` per payer at `<data_dir>/tenants/<tenant>/<user>/codex/`, owner-only. A payer id is `<tenant>/<user>`.
@@ -92,9 +94,9 @@ steven-universe's broker, per user. Reuse its code where it fits.
 - Refresh by the broker, under a per-user lock, on the rule from spike 0d. Status (`connected / expired / revoked`) recorded and exposed for the BFF.
 
 Done when:
-- [ ] Steven and Troy each connect by device code, and the status shows `connected`.
-- [ ] After a restart, the broker finds both sign-ins on disk.
-- [ ] Two refreshes started at once for one user do one refresh, and the sign-in still works after. (Proven with a fake Codex; live with real sign-ins.)
+- [x] Steven connects by device code, and the status shows `connected` (live, 2026-11-20). Troy: still to run.
+- [x] After a restart, the broker finds the sign-in on disk (live, Steven).
+- [x] Two refreshes started at once for one user do one refresh, and the sign-in still works after (live, Steven: one refresh, then "pong" through the gateway, 10,830 tokens).
 - [x] DSV-3 and DSV-13: a payer id can't reach outside `tenants/<tenant>/<user>/codex`; homes are owner-only; no token or `auth.json` content appears in any log (tests).
 
 ## 4. Gateway

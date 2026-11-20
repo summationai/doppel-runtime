@@ -54,7 +54,8 @@ class CodexHomes:
         """Create the payer's home, owner-only all the way down from the tenants folder."""
         home = self.home(payer)
         if payer not in self.overrides:
-            for folder in (self.root, home.parent.parent, home.parent, home):
+            self.root.mkdir(mode=0o700, parents=True, exist_ok=True)  # the data folder may not exist yet
+            for folder in (home.parent.parent, home.parent, home):
                 folder.mkdir(mode=0o700, exist_ok=True)
         return home
 
@@ -106,3 +107,6 @@ class CodexHomes:
     async def refresh(self, payer: str) -> Credential:
         """Without a broker, nothing refreshes: re-read, in case Codex refreshed the file itself."""
         return self.read(payer)
+
+    def rejected(self, payer: str, reason: str) -> None:
+        """Without a broker there is no status to keep."""

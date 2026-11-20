@@ -29,3 +29,8 @@ class Credentials(Protocol):
     async def refresh(self, payer: str) -> Credential:
         """Refresh after the provider refused the credential (an upstream 401). Raises NotSignedIn."""
         ...
+
+    def rejected(self, payer: str, reason: str) -> None:
+        """The provider refused this payer's credential even after a refresh (a 401 or 403): it is
+        dead until the person signs in again. `reason` is the provider's status and code, never a token."""
+        ...
