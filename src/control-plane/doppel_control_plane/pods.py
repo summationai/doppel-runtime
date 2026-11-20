@@ -207,7 +207,7 @@ class DockerPods:
         self.mirrors.checkout(repo, job.head_sha, pod.folder / "work" / job.head_sha)
         folder = pod.folder / "job" / str(job.slot_id)
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "diff.patch").write_text(self.mirrors.diff(repo, job.head_sha, self.base_branch(pr)))
+        (folder / "diff.patch").write_text(self.mirrors.diff(repo, job.head_sha, job.base_ref or self.base_branch(pr)))
         (folder / "job.json").write_text(json.dumps({
             "reviewer": job.reviewer, "pr": pr.number, "head_sha": job.head_sha,
             "workdir": f"/work/{job.head_sha}", "gateway_url": f"http://gateway:{EGRESS_PORT}",

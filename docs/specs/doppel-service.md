@@ -66,7 +66,7 @@ The scheduler decides whose sign-in pays for each reviewer. The pod only ever ho
 
 **Webhooks.** Summini is on Tailscale only. Options, in order of preference:
 
-1. The BFF receives webhooks (it is already public) and forwards them over the tailnet. Keep a reconcile poll, because webhooks get lost.
+1. The BFF receives webhooks (it is already public) and forwards them over the tailnet. Keep a reconcile poll, because webhooks get lost. **Chosen.** The runtime checks GitHub's signature itself (RC's review #7), and an event only makes it poll that repo at once.
 2. A tunnel on summini: Tailscale Funnel or Cloudflare Tunnel.
 3. Poll only, as Doppelwerk does. Enough for Friday.
 
@@ -345,6 +345,14 @@ The user or tenant pastes a key into the UI. It goes straight to the runtime's O
 ### GitHub App
 
 The one key pair in the system. Its private key signs a short JWT, which buys hour-long installation tokens. The runtime caches each installation's token and reuses it until shortly before it expires.
+
+- **Permissions:** pull requests read and write, contents read, checks and commit statuses read, metadata. Never contents write.
+- **The key:** a file only the runtime's user can read.
+- **Git:** gets the token per fetch, through its environment, never stored.
+
+Creating and connecting the App: [docs/github-app.md](../github-app.md).
+
+Anyone can open a PR on a public repo. So automatic reviews run only on PRs from owners, members and collaborators. An outsider's PR runs a reviewer only when a review is requested or an insider's command asks, so a stranger can't spend a member's plan.
 
 ### Claude subscription (later, not in the POC)
 

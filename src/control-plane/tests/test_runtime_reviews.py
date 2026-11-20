@@ -4,11 +4,11 @@ GitHub and the sandbox are the in-memory fakes; everything else is the real proc
 """
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from doppel_control_plane.app import Runtime
-from doppel_control_plane.config import Config, Listener, load
+from doppel_control_plane.config import Config, load
 from doppel_shared.testing import FakeGitHub, FakeGitHubHost, FakeSandbox, verdict
 
 REPO = "summationai/billing"
@@ -85,11 +85,106 @@ async def test_a_payer_without_a_sign_in_blocks_and_says_so_once(runtime):
     await until(lambda: len(runtime.fake_sandbox.started) == 1)
 
 
-async def test_github_app_mode_waits_for_6b(tmp_path):
-    cfg = Config(data_dir=tmp_path, listeners={n: Listener("127.0.0.1", 0) for n in ("model", "internal", "health")})
+# ---- app mode: the REST ports against a fake GitHub API (checkpoint 6b) ------------------------------
+
+
+def app_config(tmp_path, api, *, key_mode=0o600, webhooks=True) -> Config:
+    key = tmp_path / "app.pem"
+    key.write_text(api.private_key_pem)
+    key.chmod(key_mode)
+    secret = tmp_path / "webhook-secret"
+    secret.write_text("s3cret\n")
+    secret.chmod(0o600)
+    f = tmp_path / "c.toml"
+    repos = 'repos = ["summationai/billing"]\n'
+    tenant = CONFIG.replace(repos, repos + "installation_id = 77\n")
+    f.write_text(
+        tenant
+        + f"""
+[github]
+mode = "app"
+app_id = "{api.app_id}"
+private_key = "{key}"
+api_url = "{api.url}"
+{f'webhook_secret = "{secret}"' if webhooks else ""}
+"""
+    )
+    return load(f, env={"DOPPEL_DATA_DIR": str(tmp_path / "data"),
+                        **{f"DOPPEL_{n}_PORT": "0" for n in ("MODEL", "INTERNAL", "HEALTH")}})  # fmt: skip
+
+
+@pytest.fixture
+def api():
+    from doppel_gateway.testing import FakeGitHubAPI
+
+    fake = FakeGitHubAPI(installations={REPO: 77}).start()
+    yield fake
+    fake.stop()
+
+
+async def test_app_mode_reviews_a_pr_on_github_as_the_app(tmp_path, api):
+    sandbox = FakeSandbox()
+    rt = Runtime(app_config(tmp_path, api), sandbox=sandbox)
+    await rt.start()
+    try:
+        rt.broker.status = lambda payer: {"state": "connected"}
+        api.open(REPO, 42, "aaa1111", requested=["stevenliu"])
+        await until(lambda: len(sandbox.started) == 2)
+        now = datetime.now(UTC)
+        for _, job in sandbox.started:
+            runtime_verdict = verdict(job.reviewer, "aaa1111")
+            runtime_verdict["pr"] = 42
+            rt.scheduler.verdict(job.slot_id, runtime_verdict, now)
+        api.check("aaa1111")
+        await until(lambda: any(r["state"] == "APPROVED" for r in api.reviews.get((REPO, 42), [])))
+        states = [r["state"] for r in api.reviews[(REPO, 42)]]
+        assert states.count("COMMENTED") == 2 and states.count("APPROVED") == 1  # two doppels, one merger
+        assert {c.token for c in api.calls if c.path.startswith("/repos")} == {"ghs_fake0001installationtoken"}
+        assert api.tokens_issued == 1  # one token for every read and post so far
+    finally:
+        await rt.stop()
+
+
+async def test_app_mode_takes_a_signed_webhook_on_the_internal_listener_only(tmp_path, api):
+    import hashlib
+    import hmac
+    import json
+
+    import aiohttp
+
+    sandbox = FakeSandbox()
+    cfg = app_config(tmp_path, api)
     from dataclasses import replace
 
-    from doppel_control_plane.config import GitHubConfig
+    from doppel_control_plane.config import IntakeConfig
 
-    with pytest.raises(NotImplementedError, match="6b"):
-        await Runtime(replace(cfg, github=GitHubConfig(mode="app"))).start()
+    cfg = replace(cfg, intake=IntakeConfig(poll=timedelta(hours=1)))  # the timer won't see it in time
+    rt = Runtime(cfg, sandbox=sandbox)
+    await rt.start()
+    try:
+        rt.broker.status = lambda payer: {"state": "connected"}
+        rt.webhooks.burst = 0.01
+        await until(lambda: any(c.path.endswith("/pulls") for c in api.calls))  # the first poll ran
+        api.open(REPO, 42, "aaa1111")
+        body = json.dumps({"action": "opened", "repository": {"full_name": REPO}}).encode()
+        sig = "sha256=" + hmac.new(b"s3cret", body, hashlib.sha256).hexdigest()
+        headers = {"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "x1", "X-Hub-Signature-256": sig}
+        async with aiohttp.ClientSession() as http:
+            model = rt.bound["model"][1]
+            r = await http.post(f"http://127.0.0.1:{model}/github/webhook", data=body, headers=headers)
+            assert r.status == 404  # never on the listener pods reach
+            internal = rt.bound["internal"][1]
+            r = await http.post(f"http://127.0.0.1:{internal}/github/webhook", data=body, headers=headers)
+            assert r.status == 202
+        await until(lambda: len(sandbox.started) == 1)
+    finally:
+        await rt.stop()
+
+
+async def test_app_mode_refuses_a_key_others_can_read_and_a_missing_installation(tmp_path, api):
+    with pytest.raises(PermissionError, match="chmod 600"):
+        await Runtime(app_config(tmp_path, api, key_mode=0o644), sandbox=FakeSandbox()).start()
+    f = tmp_path / "bad.toml"
+    f.write_text(CONFIG + '[github]\nmode = "app"\napp_id = "1"\nprivate_key = "/k.pem"\n')
+    with pytest.raises(ValueError, match="installation_id"):
+        load(f, env={})

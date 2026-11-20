@@ -260,3 +260,40 @@ async def test_one_repo_failing_never_stops_the_others(w, tmp_path, caplog):
         await w.poll()
     assert w.pr()["current_head"] == H1
     assert any("prs pass failed on summationai/broken" in r.message for r in caplog.records)
+
+
+# ---- outsiders' PRs (checkpoint 6b) ----------------------------------------------------------------
+
+
+async def test_an_outsiders_pr_runs_nothing_unasked(w):
+    w.host.open(REPO, 42, H1, association="NONE")  # e.g. a fork PR from a stranger
+    await w.poll()
+    assert w.pr() is not None and w.slots() == []
+    w.host.push(REPO, 42, H2)
+    await w.poll(T0 + timedelta(minutes=1))
+    assert w.slots() == []  # a push doesn't add the app's reviewers either
+
+
+async def test_an_outsiders_pr_runs_what_an_insider_asks_for(w):
+    w.host.open(REPO, 42, H1, association="CONTRIBUTOR", requested=["stevenliu"])  # requested by a maintainer
+    w.host.comment(REPO, 42, "c1", "@doppelwerk review repo-owner", T0 + timedelta(seconds=1))
+    w.host.comment(REPO, 42, "c2", "@doppelwerk review repo-owner", T0 + timedelta(seconds=2),
+                   author="stranger", association="NONE")  # fmt: skip
+    await w.poll(T0 + timedelta(seconds=5))
+    assert sorted((r, s) for r, _, s in w.slots()) == [("repo-owner", "queued"), ("steven", "queued")]
+    assert w.ledger.value("SELECT count(*) FROM commands") == 1  # the stranger's command isn't one
+
+
+async def test_everyone_mode_reviews_outsiders_too(tmp_path):
+    w = World(tmp_path)
+    w.poller.auto_review = "everyone"
+    w.host.open(REPO, 42, H1, association="NONE")
+    await w.poll()
+    assert w.slots() == [("repo-owner", H1, "queued")]
+
+
+async def test_the_prs_base_reaches_the_reviewer_job(w):
+    w.host.open(REPO, 42, H1, base="release/1.2")
+    await w.poll()
+    w.scheduler.tick(T0)
+    assert w.sandbox.started[0][1].base_ref == "release/1.2"

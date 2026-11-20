@@ -111,14 +111,18 @@ class Scheduler:
 
     # ---- PR events ---------------------------------------------------------------------------------
 
-    def pr_opened(self, ref: PRRef, head: str, now: datetime) -> int:
-        """A new PR: the app's reviewers join it and are queued at its head after the settle window."""
+    def pr_opened(self, ref: PRRef, head: str, now: datetime, *, auto: bool = True) -> int:
+        """A new PR: the app's reviewers join it and are queued at its head after the settle window.
+
+        `auto=False` (an outsider's PR): the PR is known, but nothing runs until a review is requested
+        or an insider's command asks for one, so a stranger's PR can't spend anyone's plan.
+        """
         pr_id = self.ledger.upsert_pr(ref.tenant, ref.repo, ref.number, head=head, at=iso(now))
         self.ledger.execute(
             "UPDATE prs SET settle_until=?, state='open' WHERE id=?", (iso(now + self.limits.settle), pr_id)
         )
         pr = self._pr(pr_id)
-        for reviewer in self.directory.reviewers(ref.tenant, ref.repo):
+        for reviewer in self.directory.reviewers(ref.tenant, ref.repo) if auto else ():
             if reviewer.kind is ReviewerKind.APP:
                 self._add_reviewer(pr_id, reviewer.handle, "app", now)
                 self._queue(pr, reviewer, SlotReason.APP, now)
@@ -507,7 +511,15 @@ class Scheduler:
         )
         self.sandbox.start_reviewer(
             pod_id,
-            ReviewJob(slot["id"], slot["reviewer"], slot["head_sha"], capability, focus=focus, pr=self._ref(pr)),
+            ReviewJob(
+                slot["id"],
+                slot["reviewer"],
+                slot["head_sha"],
+                capability,
+                focus=focus,
+                pr=self._ref(pr),
+                base_ref=pr["base_ref"],
+            ),  # fmt: skip
         )
 
     def _set_blocked(self, slot: Any) -> None:

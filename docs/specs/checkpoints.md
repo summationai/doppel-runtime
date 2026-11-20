@@ -161,18 +161,37 @@ Done when:
 
 ## 6b. GitHub: App, polling, posting
 
-- A new doppelwerk-dev GitHub App with only the permissions a reviewer needs (no `contents: write`), installed on one sandbox repo.
-- Installation tokens minted by the runtime and cached until shortly before expiry.
-- Intake: 6a's poller, with a `GitHubReader` and a `GitHub` writer on the installation's token (repo listings, not Doppelwerk's searches: review #8).
-- The webhook route, checking `X-Hub-Signature-256` with the secret the runtime holds (review #7); the poll stays as the reconcile.
-- Clones of private repos with the installation token, never written into the mirror's config.
-- Posting: Doppelwerk's `verdict.schema.json`, `criticality.decide` and poster rules, through the gateway's posting route.
+**Code done 2026-11-20; the live run waits for the App.** [docs/github-app.md](../github-app.md) says how to create the App, connect it, and check it.
+
+- **The App's REST ports** ([doppel_gateway/github](../../src/gateway/doppel_gateway/github/)):
+  - an installation token per tenant, minted with the App's key and reused until 5 minutes before it expires;
+  - a 401 gets a new token, once;
+  - a spent rate limit says when it resets.
+- **Reads** for the poller, and **posts**:
+  - reviews with inline comments, each finding mapped to its comment; a comment GitHub refuses (a line outside the diff) moves into the review body rather than being lost;
+  - dismissals;
+  - replies;
+  - the merger's status comment, edited in place, and posted again if someone deleted it.
+- **Fetching:** mirrors fetch with the token, passed to git as environment configuration on each call. It is never in a URL, the mirror's config, or a process's arguments.
+- **Webhooks** ([webhooks.py](../../src/control-plane/doppel_control_plane/webhooks.py); review #7):
+  - the signature is checked with the secret the runtime holds;
+  - a delivery GitHub sends twice is handled once;
+  - an event makes the runtime poll its repo at once, through the same code as the timer, and a burst of events becomes one poll.
+  - The route is on the internal listener only.
+- **Outsiders' PRs:** recorded, but run nothing until someone requests a review or an insider's command asks (`[intake] auto_review`).
+- **The PR's base branch** is stored and reaches the reviewer, so the diff is taken against it.
+- **Tests:** a fake GitHub API ([doppel_gateway/testing.py](../../src/gateway/doppel_gateway/testing.py)) checks the App's JWT and tokens as GitHub does. The runtime in app mode runs against it end to end: polled, reviewed, posted, approved on CI, and woken by a signed webhook.
+- **Live check:** [scripts/live_github_check.py](../../scripts/live_github_check.py) is read-only. It checks a token per installation, the reads, and a fetch.
+
+Not ported yet: Doppelwerk's `criticality.decide` guards beyond P0/P1 (decided: later, review #2), and its poster's formatting rules.
 
 Done when, on the sandbox repo:
+- [ ] The App exists and is installed; `live_github_check.py` passes.
 - [ ] DSV-2: opening a PR gets a review from doppelwerk-dev[bot] within two poll cycles.
 - [ ] DSV-10: a push stops the old head's reviewers and the new head gets reviewed; stale approvals are dismissed.
 - [ ] DSV-11: a P0 finding posts as COMMENT; a clean app-wide verdict with CI green posts as APPROVE; a personal reviewer only ever comments.
 - [ ] Merging deletes the pod and its checkouts; the ledger keeps the posted reviews (DSV-14).
+- [x] The same flows against the fake GitHub API ([test_runtime_reviews.py](../../src/control-plane/tests/test_runtime_reviews.py), [test_github.py](../../src/gateway/tests/test_github.py)).
 
 ## 7. Summini
 

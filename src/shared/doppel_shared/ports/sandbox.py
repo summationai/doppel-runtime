@@ -16,6 +16,7 @@ class ReviewJob:
     pr: PRRef | None = None  # whose code: the sandbox checks out `head_sha` of this PR's repo
     instructions: str = ""  # the reviewer's rubric, from the PR's base (DSV-9)
     model: str | None = None  # None: the provider's default
+    base_ref: str | None = None  # the PR's base branch, for the diff; None: the repo's default branch
 
     def __repr__(self) -> str:  # keep the capability out of logs and tracebacks
         return f"ReviewJob(slot_id={self.slot_id}, reviewer={self.reviewer!r}, head_sha={self.head_sha!r})"

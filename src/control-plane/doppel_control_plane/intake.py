@@ -10,8 +10,12 @@ repos, so a spent budget drops the least important reading first:
     3. CI        a head's check runs, only where the merger is waiting on CI for it
 
 Everything here is a diff against the ledger, so a missed cycle is caught up by the next one, and
-the same answer read twice changes nothing. Webhooks (after the demo) call the same scheduler events;
-this poll stays as the reconcile.
+the same answer read twice changes nothing. A webhook (webhooks.py) polls its repo at once, through
+this same code, so events and the reconcile can't disagree.
+
+Automatic reviews run only on PRs from insiders (OWNER, MEMBER, COLLABORATOR). Anyone can open a PR
+on a public repo, so an outsider's PR is recorded but runs nothing until someone requests a review
+or an insider's `@doppelwerk` command asks for one.
 
 GitHub drops a requested person from the listing once they review. Their doppel posts as doppelwerk,
 not as them, so their own review changes nothing for it: it stays on the PR and reviews every new
@@ -21,6 +25,7 @@ when the login leaves the listing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import deque
 from dataclasses import dataclass
@@ -35,6 +40,7 @@ from doppel_control_plane.store import Ledger, iso, parse_iso
 log = logging.getLogger(__name__)
 
 HOUR = timedelta(hours=1)
+INSIDERS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 
 class OutOfBudget(Exception):
@@ -84,21 +90,37 @@ class Poller:
         *,
         lookback: timedelta = HOUR,  # how far back the first cycle reads comments
         skip_drafts: bool = True,
+        auto_review: str = "insiders",  # insiders | everyone: whose PRs get the app's reviewers unasked
     ):
         self.ledger, self.scheduler, self.reader, self.directory = ledger, scheduler, reader, directory
         self.repos, self.budget = repos, budget
         self.lookback, self.skip_drafts = lookback, skip_drafts
+        if auto_review not in ("insiders", "everyone"):
+            raise ValueError(f"auto_review must be insiders or everyone, not {auto_review!r}")
+        self.auto_review = auto_review
         self._spent_logged: set[str] = set()
+        self._locks: dict[str, asyncio.Lock] = {}  # one pass at a time per repo: the timer and webhooks
+
+    def watched(self, repo: str) -> Watched | None:
+        return next((w for w in self.repos if w.repo.lower() == repo.lower()), None)
 
     async def poll(self, now: datetime) -> None:
         """One cycle: every pass over every repo, in priority order, as far as each budget allows."""
+        await self._run(self.repos, now)
+
+    async def poll_repo(self, w: Watched, now: datetime) -> None:
+        """Every pass over one repo, now: what a webhook asks for."""
+        await self._run([w], now)
+
+    async def _run(self, repos: list[Watched], now: datetime) -> None:
         spent: set[str] = set()
         for name, pass_ in (("prs", self._prs), ("commands", self._commands), ("ci", self._ci)):
-            for w in self.repos:
+            for w in repos:
                 if w.tenant in spent:
                     continue
                 try:
-                    await pass_(w, now)
+                    async with self._locks.setdefault(w.repo, asyncio.Lock()):
+                        await pass_(w, now)
                 except OutOfBudget:
                     spent.add(w.tenant)
                     if w.tenant not in self._spent_logged:  # once per spell, not every cycle
@@ -138,13 +160,17 @@ class Poller:
         if row is None or row["state"] in (PRState.MERGED, PRState.CLOSED):  # new, or reopened
             if pr.draft and self.skip_drafts:
                 return
-            log.info("intake: %s opened at %s", ref, pr.head_sha[:7])
-            pr_id = self.scheduler.pr_opened(ref, pr.head_sha, now)
+            auto = self.auto_review == "everyone" or pr.author_association in INSIDERS
+            log.info("intake: %s opened at %s%s", ref, pr.head_sha[:7],
+                     "" if auto else f" by an outsider ({pr.author_association}): nothing runs unasked")  # fmt: skip
+            pr_id = self.scheduler.pr_opened(ref, pr.head_sha, now, auto=auto)
         else:
             pr_id = row["id"]
             if row["current_head"] != pr.head_sha:
                 log.info("intake: %s moved to %s", ref, pr.head_sha[:7])
                 self.scheduler.synchronize(ref, pr.head_sha, now)
+        if row is None or row["base_ref"] != pr.base_ref:
+            self.ledger.execute("UPDATE prs SET base_ref=? WHERE id=?", (pr.base_ref, pr_id))
         await self._requests(w, ref, pr_id, pr, now)
 
     async def _requests(self, w: Watched, ref: PRRef, pr_id: int, pr: OpenPR, now: datetime) -> None:

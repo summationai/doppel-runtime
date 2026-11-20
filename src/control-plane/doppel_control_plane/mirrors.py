@@ -9,11 +9,13 @@ mirror holds that repo's lock, or two clones (or two fetches into the same ref) 
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 SHA = re.compile(r"^[0-9a-f]{7,40}$")
@@ -23,17 +25,20 @@ class MirrorError(Exception):
     pass
 
 
-def _git(*args: str, cwd: Path | None = None) -> str:
-    run = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=600)
+def _git(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
+    run = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=600,
+                         env={**os.environ, **env} if env else None)  # fmt: skip
     if run.returncode != 0:
         raise MirrorError(f"git {args[0]} failed: {run.stderr.strip()[-500:]}")
     return run.stdout
 
 
 class Mirrors:
-    def __init__(self, root: Path, *, partial: bool = True):
+    def __init__(self, root: Path, *, partial: bool = True, git_env: Callable[[str], dict[str, str]] | None = None):
         self.root = root
         self.partial = partial  # --filter=blob:none, as Doppelwerk does (off for servers that refuse filters)
+        # Credentials for fetching a repo (the App's token, as git environment config): per call, never stored.
+        self.git_env = git_env
         self._locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
 
@@ -51,14 +56,14 @@ class Mirrors:
         """Clone if needed; fetch every branch and the PR's head (`pr_ref`) into refs/doppel/pr/<n>."""
         mirror = self.path(repo)
         with self._lock(repo):
-            self._sync(mirror, url, pr_number, pr_ref)
+            self._sync(mirror, url, pr_number, pr_ref, self.git_env(repo) if self.git_env else None)
 
-    def _sync(self, mirror: Path, url: str, pr_number: int, pr_ref: str) -> None:
+    def _sync(self, mirror: Path, url: str, pr_number: int, pr_ref: str, env: dict[str, str] | None) -> None:
         if not mirror.exists():
             self.root.mkdir(parents=True, exist_ok=True)
-            _git("clone", "--bare", *(["--filter=blob:none"] if self.partial else []), url, str(mirror))
+            _git("clone", "--bare", *(["--filter=blob:none"] if self.partial else []), url, str(mirror), env=env)
         _git("fetch", "--prune", "--force", url, "+refs/heads/*:refs/heads/*",
-             f"+{pr_ref}:refs/doppel/pr/{pr_number}", cwd=mirror)  # fmt: skip
+             f"+{pr_ref}:refs/doppel/pr/{pr_number}", cwd=mirror, env=env)  # fmt: skip
 
     def default_branch(self, repo: str) -> str:
         return _git("symbolic-ref", "--short", "HEAD", cwd=self.path(repo)).strip()

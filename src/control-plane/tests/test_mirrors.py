@@ -90,3 +90,23 @@ def test_reviewers_preparing_at_once_dont_collide(tmp_path, origin):
         outs = list(pool.map(prepare, range(6)))
     assert {o for o in outs} == {tmp_path / "work" / head}
     assert (tmp_path / "work" / head / "a.py").read_text() == "x = 2\n"
+
+
+def test_fetch_credentials_reach_git_per_call_and_are_never_stored(tmp_path, origin):
+    """The App's token goes to git as environment config on each fetch: not in the URL, not in the mirror."""
+    repo, head = origin
+    calls = []
+
+    def git_env(name):
+        calls.append(name)
+        return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+                "GIT_CONFIG_VALUE_0": "AUTHORIZATION: basic SECRETVALUE", "GIT_TERMINAL_PROMPT": "0"}  # fmt: skip
+
+    m = Mirrors(tmp_path / "mirrors", partial=False, git_env=git_env)
+    m.sync("summationai/sandbox", str(repo), 7, "refs/heads/pr-7")
+    m.sync("summationai/sandbox", str(repo), 7, "refs/heads/pr-7")
+    assert calls == ["summationai/sandbox", "summationai/sandbox"]  # fresh each time: tokens expire
+    mirror = m.path("summationai/sandbox")
+    stored = subprocess.run(["git", "config", "--list", "--local"], cwd=mirror, capture_output=True, text=True).stdout
+    assert "SECRETVALUE" not in stored and "extraheader" not in stored
+    assert all("SECRETVALUE" not in p.read_text(errors="ignore") for p in mirror.rglob("*") if p.is_file())
