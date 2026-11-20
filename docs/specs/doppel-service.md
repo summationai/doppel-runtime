@@ -96,6 +96,17 @@ The ledger rows stay after the pod is gone, for dedupe across rounds and for lea
 | `check_suite` / `check_run` completed | Re-run the merger for that head |
 | `push` to the default branch | Refresh the rules and guides read from the base |
 
+**Polling** ([intake.py](../../src/control-plane/doppel_control_plane/intake.py); review #8) produces the same events from repo listings, never per-person searches, under a calls-per-hour budget per installation. It diffs each listing against the ledger, so a missed cycle is caught up and a repeated read changes nothing. Three passes, in priority order across a tenant's repos:
+
+1. The open-PR listing: new PRs, new heads, requested reviewers. A PR that left the listing is looked up once to tell merged from closed.
+2. The repo's PR comments since the last cycle, for commands.
+3. Check runs, only for heads the merger is waiting on CI for.
+
+Two rules come from how GitHub's listing works:
+
+- **Drafts:** they aren't reviewed until they're marked ready.
+- **Requests:** GitHub drops a requested person from the listing once they review. Intake reads that as the request removed: their doppel stops, and the merger stops waiting for it.
+
 ## 5. The scheduler: one matching system
 
 The scheduler keeps Doppelwerk's shape (find work, queue it in a ledger, run it) but turns claiming into matching. Every reviewer on a head is a **slot**. Each tick (every few seconds, or on an event) it starts every slot whose conditions all hold, in the PR's one pod. There is no fixed order of steps.

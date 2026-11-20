@@ -52,7 +52,7 @@ DOPPEL_DOCKER_TESTS=1 uv run pytest tests/integration   # needs Docker
 uv run doppel-runtime serve   # listeners on 127.0.0.1:8700 (model), 8701 (internal), 8702 (health)
 ```
 
-Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [src/control-plane/doppel_control_plane/config.py](src/control-plane/doppel_control_plane/config.py). Progress is tracked in [docs/specs/checkpoints.md](docs/specs/checkpoints.md).
+Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [src/control-plane/doppel_control_plane/config.py](src/control-plane/doppel_control_plane/config.py). It holds the tenants, repos and reviewers until the BFF's records arrive. With `github.mode = "off"` (the default), only the broker and gateway run; intake, the scheduler and the sandbox start once GitHub is configured (the App, checkpoint 6b). Progress is tracked in [docs/specs/checkpoints.md](docs/specs/checkpoints.md).
 
 ## Docs
 

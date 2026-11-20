@@ -1,6 +1,7 @@
 """DSV-8 with real containers: a pod's network reaches the gateway's model route and nothing else.
 
-Opt-in (needs Docker and pulls python:3.12-slim): DOPPEL_DOCKER_TESTS=1 uv run pytest tests/integration
+Opt-in (needs Docker and pulls python:3.12-slim; the runtime gets its light dependencies, not the Codex SDK,
+which only a sign-in imports): DOPPEL_DOCKER_TESTS=1 uv run pytest tests/integration
 
 Layout, as on summini: the runtime container sits on an ordinary bridge (it reaches the internet)
 and on an `--internal` network as `gateway`. Its model listener binds every interface; its internal
@@ -64,7 +65,7 @@ def network():
             "-e", "DOPPEL_MODEL_HOST=0.0.0.0", "-e", "DOPPEL_MODEL_PORT=8700",
             "-e", "DOPPEL_INTERNAL_HOST=127.0.0.1", "-e", "DOPPEL_INTERNAL_PORT=8701",
             "-e", "DOPPEL_HEALTH_HOST=127.0.0.1", "-e", "DOPPEL_HEALTH_PORT=8702",
-            IMAGE, "sh", "-c", "pip install -q aiohttp && python -m doppel_control_plane serve",
+            IMAGE, "sh", "-c", "pip install -q aiohttp jsonschema && python -m doppel_control_plane serve",
         )  # fmt: skip
         docker("network", "connect", "--alias", "gateway", net, gw)
         deadline = time.monotonic() + 180
