@@ -73,3 +73,20 @@ def test_bad_commits_are_refused(tmp_path, origin):
     m.sync("summationai/sandbox", str(repo), 7, "refs/heads/pr-7")
     with pytest.raises(MirrorError):
         m.checkout("summationai/sandbox", "--output=/etc/x", tmp_path / "w")
+
+
+def test_reviewers_preparing_at_once_dont_collide(tmp_path, origin):
+    """Found in the demo: two reviewers starting together both cloned, then both fetched into one ref."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    repo, head = origin
+    m = Mirrors(tmp_path / "mirrors", partial=False)
+
+    def prepare(_):
+        m.sync("summationai/sandbox", str(repo), 7, "refs/heads/pr-7")
+        return m.checkout("summationai/sandbox", head, tmp_path / "work" / head)
+
+    with ThreadPoolExecutor(6) as pool:
+        outs = list(pool.map(prepare, range(6)))
+    assert {o for o in outs} == {tmp_path / "work" / head}
+    assert (tmp_path / "work" / head / "a.py").read_text() == "x = 2\n"
