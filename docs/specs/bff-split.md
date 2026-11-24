@@ -17,6 +17,7 @@ Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoi
 | D7 approval | Ours: the merger. |
 | D8 trust | Ours: every doppel posts a COMMENT review. The trust ladder and private drafts are removed. Per-repo publishing on/off stays as an owner's kill switch. |
 | Unclaimed work | A slot no runtime claims within 2 hours expires. |
+| Who closes a finding (RC #4) | Decided 2026-11-24: **(b)** anyone with write access, the PR's author included, by resolving the finding's thread; **plus the doppels:** each later review gets the PR's still-open findings and says which the new commit fixes, and Doppelwerk resolves those threads. An open P0/P1 carries forward across commits until fixed or resolved; a bare reply doesn't close it. |
 
 Sections 2 to 4 below are the analysis behind these. Where a "Recommend" there differs from this table, the table wins.
 
@@ -178,7 +179,7 @@ The per-repo publishing switch stays as a kill switch.
 
 **D9. Commands.** Ours has `@doppelwerk review`. Theirs has no commands. *Recommend:* port them to the BFF, using the `issue_comment` webhook.
 
-**D10. Who closes a finding.** Theirs records outcome badges set in the UI (`finding_states`). Ours reads GitHub: a resolved thread or a dismissive reply (RC review #4, not built yet). *Recommend:* one `finding_dispositions` table, keyed (PR, doppel, finding id), with `source ui|github` and who did it. The RC #4 question of who may clear a blocking finding then answers for both. It is still waiting on your choice of (a), (b) or (c).
+**D10. Who closes a finding.** Theirs records outcome badges set in the UI (`finding_states`). Ours reads GitHub: a resolved thread or a dismissive reply (RC review #4, not built yet). *Recommend:* one `finding_dispositions` table, keyed (PR, doppel, finding id), with `source ui|github` and who did it. The RC #4 question of who may clear a blocking finding then answers for both. Decided: (b) plus doppel auto-resolve (see the Decided table).
 
 **D11. Hearing about GitHub changes.** Theirs is webhook only. Ours polls with a per-installation budget, plus webhook pokes, because the Mac mini has no public address. The BFF has one. *Recommend:* webhooks first, plus our poller as a reconcile job every 10 minutes for missed deliveries. Its budget and cursor rules carry over.
 
@@ -244,7 +245,7 @@ Eight checkpoints. Each one is built in the clone on its own branch, then shippe
 | 3 | Intake and slots | The webhook makes one slot per (PR, head, doppel) (D2); force pushes are reviewed too. App doppels follow the workspace's event and personal doppels run when their person is requested (D4). Each slot gets its payer (D3). A slot not claimed within 2 h becomes `expired`. | A PR webhook makes the right slots, and stale ones expire. | **Live, v67** (2026-11-24) |
 | 4 | Jobs to the Mac | The check-in answer carries jobs, assigned only where the payer has a ready seat, within the payer and host caps. A job carries a one-repo read token and a snapshot of the doppel's rules. The Mac runs it in the sandbox and reports the result. | A Mac reviews a PR on a sandbox repo end to end. | **Live, v69** (2026-11-24); runtime side in its own PR |
 | 5 | Posting and the merger | The BFF posts each doppel's review as a COMMENT as Doppelcloud (D8), and the merger decides and approves (D7), with its status. When a slot expires, the merger stops waiting for a personal doppel, and an app doppel's PR stays unapproved with the reason. The merger's locked decisions and tests are ported. | A PR gets its doppels' comments and the merger's decision. | **Live, v70** (2026-11-24) |
-| 6 | Commands and dispositions | `@doppelwerk review` and the other commands, dispositions on findings, and the reconcile poll (D9–D11). | — | Next; dispositions wait on RC's answer to #4: (a), (b) or (c) |
+| 6 | Commands and dispositions | `@doppelwerk review` and the other commands, dispositions on findings, and the reconcile poll (D9–D11). | — | Next (RC #4 decided: (b) plus doppel auto-resolve) |
 | 7 | Cutover | The runtime's own intake, scheduler, merger and GitHub posting are deleted, and its ledger shrinks to the local tables. The Mac mini moves over, and the Codex crews can resume. | — | |
 
 Checkpoint 5 in detail (migration `20261124200000_posting_and_merger`; BFF `server/reviews/merger.ts`, `publish.ts`, `server/github/reviews.ts`):
