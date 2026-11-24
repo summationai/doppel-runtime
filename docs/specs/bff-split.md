@@ -1,6 +1,6 @@
 # The split: Doppelwerk's BFF orchestrates, the runtime runs reviews
 
-Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoints 0 and 1 are live (v63, v64); see section 5.
+Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoints 0 to 2 are live (v63, v64, v66); see section 5.
 
 ## Decided
 
@@ -60,15 +60,17 @@ The locked decisions in `docs/specs/built/` are the porting spec. Each row with 
 
 ## 2. The runtime's protocol
 
-The runtime only ever calls out to the BFF; nothing calls in. Their companion protocol (pair code → device credential, a 30 s poll, start and finish per review) had the right shape, but checkpoint 1 removed it with the companion. Checkpoint 2 builds the runtime's own protocol in its place (§4b):
+The runtime only ever calls out to the BFF; nothing calls in. Their companion protocol (pair code → device credential, a 30 s poll, start and finish per review) had the right shape, but checkpoint 1 removed it with the companion. Checkpoint 2 built the runtime's own protocol in its place (§4b; BFF `server/runtimes/`, runtime `doppel_control_plane/bff.py`):
 
 ```
-POST /api/runtime/pair      one-time pair code → runtime credential (the BFF stores its hash)
-POST /api/runtime/seats     one-time seat code → a seat for that member on this runtime
-POST /api/runtime/check-in  the roster in (seats, readiness, plan, quota, running jobs, free capacity)
-                            → control out (jobs to start, seats to remove, pause, caps, revoked)
-POST /api/runtime/jobs/:id  the result: verdict (D6) or failure, with each engine tried
+POST /api/runtime/pair      {code: dwp_…, credential: dwr_… the Mac made} → which Mac, which workspace
+POST /api/runtime/seats     {code: dws_…} → the seat: id, payer `<workspace id>/<member id>`, member and login
+POST /api/runtime/check-in  {version, capacity, running: [job ids], seats: [{id, state, plan, quota}]}
+                            → {paused, caps, seats, remove_seats, jobs, check_in_after_seconds} | {revoked: true}
+POST /api/runtime/jobs/:id  the result: verdict (D6) or failure, with each engine tried (checkpoint 4)
 ```
+
+Pair and seat codes last 30 minutes and work once; the BFF stores only hashes, salted with the deployment. Seat states come only from check-ins. A seat the Mac reports that the BFF doesn't have (removed, or its member left) comes back in `remove_seats`; a seat the BFF lists that the Mac lost is adopted. A removed Mac gets `{revoked: true}`, signs every seat out and forgets its credential; a credential the BFF refuses (401) is kept, so a wrong address can't wipe sign-ins.
 
 From what we learned about the companion protocol, the new one keeps these rules:
 
@@ -76,8 +78,6 @@ From what we learned about the companion protocol, the new one keeps these rules
 2. **Check-ins renew leases.** A check-in lists its running jobs, and the BFF extends their leases, so a large review can outlast a fixed lease.
 3. **Many jobs at once.** The companion's limit was one active review per person. Ours is a payer cap (default 2) plus a host cap, and one Mac serves many payers.
 4. **The result is our verdict.** See D6.
-
-The paths above are a sketch; checkpoint 2 fixes them.
 
 ## 3. Merging the ledgers
 
@@ -240,8 +240,8 @@ Eight checkpoints. Each one is built in the clone on its own branch, then shippe
 |---|---|---|---|---|
 | 0 | Regroup the BFF | The server is grouped as `platform/`, `github/`, `workspace/`, `intake/`, `reviews/` and `shared/`, and `tests/architecture.test.ts` enforces the imports. Behaviour is unchanged. | 75 tests pass, 2 are skipped. | **Live, v63** (2026-11-23) |
 | 1 | One path, clean schema | Doppels become rows (details below). Removed: the companion, its Rust program, profiles, drafts, review history, analytics and the ChatGPT/Grok links. Settings lose their dead keys. | All 28 release checks pass on a fork of production, including the data checks. | **Live, v64**, plus v65 removing a leftover download (2026-11-24) |
-| 2 | Macs and seats | **BFF:** `runtimes` and `runtime_seats` tables, the "Add a Mac" pair code, seat codes, and the check-in POST. The Mac sends its roster; the answer says which seats to remove, whether to pause, the caps, and whether the runtime is revoked (§4b). **Runtime:** `doppel-runtime pair`, `seat add` (Codex device sign-in), and the check-in loop as a daemon. | A Mac paired to the local BFF shows its seats, and revoking it from the BFF stops it. | Next |
-| 3 | Intake and slots | The webhook makes one slot per (PR, head, doppel) (D2); force pushes are reviewed too. App doppels follow the workspace's event and personal doppels run when their person is requested (D4). Each slot gets its payer (D3). A slot not claimed within 2 h becomes `expired`. | A PR webhook makes the right slots, and stale ones expire. | |
+| 2 | Macs and seats | **BFF:** `runtimes` and `runtime_seats` tables, the "Add a Mac" pair code, seat codes, and the check-in POST. The Mac sends its roster; the answer says which seats to remove, whether to pause, the caps, and whether the runtime is revoked (§4b). **Runtime:** `doppel-runtime pair`, `seat add` (Codex device sign-in), and the check-in loop as a daemon. | A Mac paired to the local BFF shows its seats, and revoking it from the BFF stops it. | **Live, v66** (2026-11-24); runtime side in its own PR |
+| 3 | Intake and slots | The webhook makes one slot per (PR, head, doppel) (D2); force pushes are reviewed too. App doppels follow the workspace's event and personal doppels run when their person is requested (D4). Each slot gets its payer (D3). A slot not claimed within 2 h becomes `expired`. | A PR webhook makes the right slots, and stale ones expire. | Next |
 | 4 | Jobs to the Mac | The check-in answer carries jobs, assigned only where the payer has a ready seat, within the payer and host caps. A job carries a one-repo read token and a snapshot of the doppel's rules. The Mac runs it in the sandbox and reports the result. | A Mac reviews a PR on a sandbox repo end to end. | |
 | 5 | Posting and the merger | The BFF posts each doppel's review as a COMMENT as Doppelcloud (D8), and the merger decides and approves (D7), with its status. When a slot expires, the merger stops waiting for a personal doppel, and an app doppel's PR stays unapproved with the reason. The merger's locked decisions and tests are ported. | A PR gets its doppels' comments and the merger's decision. | |
 | 6 | Commands and dispositions | `@doppelwerk review` and the other commands, dispositions on findings, and the reconcile poll (D9–D11). | — | Waits on RC's answer to #4: (a), (b) or (c) |
