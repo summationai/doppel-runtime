@@ -26,3 +26,13 @@ def test_a_job_file_holds_no_capability(tmp_path):
     (tmp_path / "job.json").write_text(json.dumps(JOB.__dict__))
     assert Job.load(tmp_path) == JOB
     assert "capability" not in json.dumps(JOB.__dict__).lower()
+
+
+def test_a_verdict_may_say_which_earlier_findings_this_commit_fixes():
+    from doppel_shared.verdict_schema import problems
+
+    verdict = {"doppel": "security", "pr": 7, "head_sha": "a" * 40, "engine": "codex", "verdict": "clean",
+               "summary": "Fixed.", "findings": [], "scope": {"files_reviewed": 1},
+               "fixed": ["3a2750e8-F1"]}  # fmt: skip
+    assert problems(verdict) == []
+    assert problems({**verdict, "fixed": [1]}) != []
