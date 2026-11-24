@@ -17,7 +17,7 @@ Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoi
 | D7 approval | Ours: the merger. |
 | D8 trust | Ours: every doppel posts a COMMENT review. The trust ladder and private drafts are removed. Per-repo publishing on/off stays as an owner's kill switch. |
 | Unclaimed work | A slot no runtime claims within 2 hours expires. |
-| Who closes a finding (RC #4) | Decided 2026-11-24: **(b)** anyone with write access, the PR's author included, by resolving the finding's thread; **plus the doppels:** each later review gets the PR's still-open findings and says which the new commit fixes, and Doppelwerk resolves those threads. An open P0/P1 carries forward across commits until fixed or resolved; a bare reply doesn't close it. |
+| Who closes a finding (RC #4) | Decided 2026-11-24: **(b)** anyone with write access, the PR's author included, by resolving the finding's thread; **plus the doppels:** each later review by a doppel gets that doppel's own still-open findings on the PR (never another doppel's) and says which the new commit fixes, and Doppelwerk resolves those threads. An open P0/P1 carries forward across commits until fixed or resolved; a bare reply doesn't close it. |
 
 Sections 2 to 4 below are the analysis behind these. Where a "Recommend" there differs from this table, the table wins.
 
