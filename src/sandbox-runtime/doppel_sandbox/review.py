@@ -50,7 +50,8 @@ Answer with ONLY one JSON object, no prose and no code fence:
                  "claim": "what is wrong, one sentence", "evidence": "the code you read that proves it",
                  "suggestion": "a concrete fix", "precondition": "what must hold for it to fire, or none",
                  "reachability": "always|conditional|rare", "fix_scope": "in_pr|follow_up"}}],
-  "scope": {{"files_reviewed": 0, "files_skipped": []}}}}
+  "scope": {{"files_reviewed": 0, "files_skipped": []}},
+  "fixed": ["the key of each earlier finding of yours, listed above, that this commit fixes"]}}
 """
 
 RETRY = "That answer doesn't match the required shape: {problems}. Answer again with ONLY the JSON object."

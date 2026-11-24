@@ -97,6 +97,7 @@ async def test_a_job_starts_in_its_prs_pod_with_the_doppels_rules_and_its_run_pa
     assert (started.reviewer, started.head_sha, started.base_ref) == ("security", HEAD, "main")
     assert started.instructions.startswith("## Your persona: security")
     assert started.files["references/owasp.md"] == "A1"
+    assert started.focus == "", "no command, no focus"
     # The gateway finds the run, and who pays for it, by the capability's hash; the capability itself isn't stored.
     run = LedgerRuns(ledger).running(capability_hash(started.capability))
     assert run is not None and run.payer == f"{ORG}/{DAVID}"
@@ -113,6 +114,13 @@ async def test_a_job_starts_in_its_prs_pod_with_the_doppels_rules_and_its_run_pa
     bff.to_give = [given]
     await link.check_in()
     assert len(sandbox.started) == 1, "the same job twice starts once"
+
+
+async def test_a_commands_focus_reaches_the_reviewer(world):
+    bff, ledger, sandbox, runner, link = world
+    bff.to_give = [job(focus="the refund path")]
+    await link.check_in()
+    assert sandbox.started[0][1].focus == "the refund path"
 
 
 async def test_a_verdict_is_sent_at_once_and_the_pod_goes_when_its_last_job_ends(world):
