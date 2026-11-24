@@ -3,7 +3,7 @@
 Listeners are separate sockets so the network can keep pods away from all but the model route
 (DSV-8): pods reach `model`; `internal` (posting, broker, API) and `health` stay off the pod network.
 
-The broker, the gateway and the BFF check-in always run (the check-in waits quietly until this Mac
+The broker, the gateway and the BFF check-in always run (the check-in waits quietly until this runner
 is paired). Intake, the scheduler and the sandbox run once GitHub is configured (`github.mode =
 "app"`: the App's REST ports), or when a caller hands in the GitHub ports (tests, the local demo).
 Webhooks are taken on the internal listener when a secret is configured.
@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import logging
 import signal
+import sys
 from datetime import UTC, datetime
 
 from aiohttp import web
@@ -61,6 +62,7 @@ class Runtime:
         self.roles: dict[str, Role] = {}
         self._runners: list[web.AppRunner] = []
         self.bound: dict[str, tuple[str, int]] = {}  # listener -> (host, port) actually bound
+        self._model_bridge: str | None = None
         self.gateway: ModelRoute | None = None
         self.broker: Broker | None = None
         self.bff: BffLink | None = None
@@ -93,7 +95,7 @@ class Runtime:
             self.gateway.add_routes(app)
         if listener == "internal" and self.broker is not None:  # sign-ins: never on the model listener
             broker_api.add_routes(app, self.broker)
-        if listener == "internal" and self.bff is not None:  # seats, added from this Mac's CLI
+        if listener == "internal" and self.bff is not None:  # seats, added from the runner's CLI
             bff_routes(app, self.bff)
         if listener == "internal":  # GitHub's events, forwarded by the BFF; 404 until webhooks are configured
 
@@ -183,7 +185,7 @@ class Runtime:
         pods = DockerPods(
             cfg.data_dir / "pods", Mirrors(cfg.data_dir / "mirrors", git_env=self.jobs.git_env),
             image=cfg.sandbox.image,
-            gateway_target=cfg.sandbox.gateway_target or f"host.docker.internal:{self.bound['model'][1]}",
+            gateway_target=self._gateway_target(),
             repo_url=lambda pr: cfg.github.repo_url.format(repo=pr.repo),
             on_verdict=self.jobs.verdict, on_failed=self.jobs.failed,
             runtime=cfg.sandbox.runtime, memory=cfg.sandbox.memory, cpus=cfg.sandbox.cpus, owner=owner,
@@ -201,7 +203,7 @@ class Runtime:
         owner = hashlib.sha256(str(cfg.data_dir.resolve()).encode()).hexdigest()[:12]
         pods = DockerPods(
             cfg.data_dir / "pods", Mirrors(cfg.data_dir / "mirrors", git_env=self._git_env), image=cfg.sandbox.image,
-            gateway_target=cfg.sandbox.gateway_target or f"host.docker.internal:{self.bound['model'][1]}",
+            gateway_target=self._gateway_target(),
             repo_url=lambda pr: cfg.github.repo_url.format(repo=pr.repo),
             on_verdict=lambda slot, v: self.scheduler.verdict(slot, v, self.clock()),
             on_failed=lambda slot, why: self.scheduler.slot_failed(slot, why, self.clock()),
@@ -210,17 +212,37 @@ class Runtime:
         pods.sweep()
         return pods
 
+    def _gateway_target(self) -> str:
+        host = self._model_bridge or "host.docker.internal"
+        return self.config.sandbox.gateway_target or f"{host}:{self.bound['model'][1]}"
+
     async def _listen(self) -> None:
         for name in LISTENERS:
             listener = self.config.listeners[name]
             runner = web.AppRunner(self._app(name), access_log=None)
             await runner.setup()
-            site = web.TCPSite(runner, listener.host, listener.port)
+            site = web.TCPSite(runner, listener.host or "127.0.0.1", listener.port)
             await site.start()
             host, port = site._server.sockets[0].getsockname()[:2]
             self.bound[name] = (host, port)
             self._runners.append(runner)
             log.info("listener %s on %s:%d", name, host, port)
+            if name == "model" and listener.host is None and sys.platform == "linux":
+                await self._listen_on_docker_bridge(runner, port)
+
+    async def _listen_on_docker_bridge(self, runner: web.AppRunner, port: int) -> None:
+        from doppel_control_plane.pods import docker_bridge_gateway
+
+        bridge = await asyncio.to_thread(docker_bridge_gateway)
+        if bridge is None:
+            return  # A broker-only process can run without Docker.
+        try:
+            await web.TCPSite(runner, bridge, port).start()
+        except OSError as exc:
+            log.warning("could not bind model listener on Docker bridge %s:%d: %s", bridge, port, exc)
+        else:
+            self._model_bridge = bridge
+            log.info("listener model on Docker bridge %s:%d", bridge, port)
 
     async def stop(self) -> None:
         for task in self._tasks:

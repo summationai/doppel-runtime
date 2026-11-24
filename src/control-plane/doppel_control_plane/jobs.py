@@ -1,8 +1,8 @@
-"""Jobs from Doppelwerk's BFF, run in this Mac's sandbox (docs/specs/bff-split.md §4b "Running a job", checkpoint 4).
+"""Jobs from Doppelwerk's BFF, run in this runner's sandbox (docs/specs/bff-split.md §4b "Running a job", checkpoint 4).
 
     accept()   a job from a check-in: a local slot in the ledger (the gateway finds a run's payer through it, by its
                capability's hash), the PR's pod (one per PR, shared by its reviewers), and the reviewer started with
-               the doppel's rules and files, as the BFF sent them. This Mac keeps no review rules.
+               the doppel's rules and files, as the BFF sent them. This runner keeps no review rules.
     running()  the BFF ids of jobs in hand, for the check-in, which renews their leases
     stop()     what the BFF says to stop (the PR moved on, or the job was taken back)
     flush()    results the BFF hasn't accepted yet, sent again until it does (or says the job isn't ours any more)

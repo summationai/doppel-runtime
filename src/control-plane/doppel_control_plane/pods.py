@@ -26,7 +26,9 @@ import secrets
 import shutil
 import subprocess
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
+from ipaddress import IPv4Address
 from pathlib import Path
 
 from doppel_shared.ports import ReviewJob
@@ -78,11 +80,26 @@ def write_doppel_files(root: Path, files: dict[str, str]) -> None:
         path.chmod(0o755 if path.is_dir() else 0o644)
 
 
-def docker(*args: str, check: bool = True) -> str:
-    run = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=300)
+def docker(*args: str, check: bool = True, timeout: int = 300) -> str:
+    run = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
     if check and run.returncode != 0:
         raise RuntimeError(f"docker {args[0]} failed: {run.stderr.strip()[-500:]}")
     return run.stdout.strip()
+
+
+def docker_bridge_gateway() -> str | None:
+    """The local IPv4 bridge address that a Linux Docker container uses to reach its host."""
+    try:
+        gateways = docker(
+            "network", "inspect", "bridge", "--format", "{{range .IPAM.Config}}{{println .Gateway}}{{end}}",
+            check=False, timeout=5,
+        )  # fmt: skip
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for gateway in gateways.splitlines():
+        with suppress(ValueError):
+            return str(IPv4Address(gateway))
+    return None
 
 
 @dataclass
@@ -145,16 +162,25 @@ class DockerPods:
             (folder / sub).chmod(0o755)
         network = pod_id
         docker("network", "create", "--internal", *self.labels, network)
-        docker("network", "connect", "--alias", "gateway", network, self.egress)
-        docker(
-            "run", "-d", "--init", "--name", pod_id, "--network", network,  # --init: a PID 1 that reaps orphans
-            *(["--runtime", self.runtime] if self.runtime else []),
-            "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,mode=1777",
-            "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            "--memory", self.memory, "--cpus", self.cpus, "--pids-limit", "512",
-            "-v", f"{folder / 'work'}:/work:ro", "-v", f"{folder / 'job'}:/job:ro",
-            "--label", f"doppel.pr={pr}", *self.labels, self.image,
-        )  # fmt: skip
+        try:
+            docker("network", "connect", "--alias", "gateway", network, self.egress)
+            # gVisor cannot reach Docker's embedded DNS. Use the forwarder's address on this pod's own network.
+            networks = json.loads(docker("inspect", "--format", "{{json .NetworkSettings.Networks}}", self.egress))
+            gateway_ip = IPv4Address(networks[network]["IPAddress"])
+            docker(
+                "run", "-d", "--init", "--name", pod_id, "--network", network,  # --init: a PID 1 that reaps orphans
+                "--add-host", f"gateway:{gateway_ip}",
+                *(["--runtime", self.runtime] if self.runtime else []),
+                "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,mode=1777",
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                "--memory", self.memory, "--cpus", self.cpus, "--pids-limit", "512",
+                "-v", f"{folder / 'work'}:/work:ro", "-v", f"{folder / 'job'}:/job:ro",
+                "--label", f"doppel.pr={pr}", *self.labels, self.image,
+            )  # fmt: skip
+        except Exception:
+            with suppress(OSError, subprocess.TimeoutExpired):
+                self.delete_pod(pod_id)
+            raise
         self.pods[pod_id] = Pod(pod_id, pr, network, folder)
         log.info("pod %s for %s", pod_id, pr)
         return pod_id

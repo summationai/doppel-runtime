@@ -3,11 +3,11 @@ from pathlib import Path
 from doppel_control_plane.config import load
 
 
-def test_defaults_bind_everything_to_localhost():
+def test_defaults_use_automatic_model_binding_and_loopback_for_private_listeners():
     cfg = load(env={})
     assert cfg.data_dir == Path("./var")
     assert {name: (lis.host, lis.port) for name, lis in cfg.listeners.items()} == {
-        "model": ("127.0.0.1", 8700),
+        "model": (None, 8700),
         "internal": ("127.0.0.1", 8701),
         "health": ("127.0.0.1", 8702),
     }

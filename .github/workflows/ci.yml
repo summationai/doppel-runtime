@@ -16,3 +16,33 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check src tests scripts
       - run: uv run pytest -q
+
+  linux-runner-e2e:
+    name: Linux runner end to end (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install gVisor
+        working-directory: ${{ runner.temp }}
+        run: |
+          base="https://storage.googleapis.com/gvisor/releases/release/20261116/$(uname -m)"
+          curl -fsSLO "$base/gvisor.tar.zstd"
+          curl -fsSLO "$base/gvisor.tar.zstd.sha512"
+          sha512sum -c gvisor.tar.zstd.sha512
+          sudo tar --zstd -xf gvisor.tar.zstd -C /usr/local/bin
+          sudo runsc install
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}' | grep -q '"runsc"'
+      - run: uv sync --locked
+      - name: Pair a runner and review a PR in gVisor
+        env:
+          DOPPEL_DOCKER_TESTS: "1"
+          DOPPEL_TEST_SANDBOX_RUNTIME: runsc
+        run: uv run pytest -q tests/integration/test_runtime_docker.py::test_linux_runner_pairs_and_returns_a_bff_verdict

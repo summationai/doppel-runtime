@@ -6,6 +6,8 @@ Opt-in (needs Docker; builds src/sandbox-runtime/Dockerfile):
 The runtime builds its own sandbox from the config (DockerPods, mirrors, the egress forwarder). GitHub
 is the in-memory fake, the repo a local git repo, and the model a local fake behind the real gateway.
 Codex in the pod is real; so are intake, the scheduler, the gateway's capability check and the merger.
+The Linux BFF test also exercises pairing, seats, job claims, verdict delivery, and revocation
+against a Doppelwerk HTTP fixture using the real Docker or gVisor sandbox.
 """
 
 import asyncio
@@ -13,13 +15,20 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from aiohttp import web
+from aiohttp.test_utils import TestServer
 from doppel_control_plane.app import Runtime
+from doppel_control_plane.bff import BffState, pair
 from doppel_control_plane.config import load
 from doppel_control_plane.pods import docker
+from doppel_model_provider import codex_homes
+from doppel_model_provider.codex_account import DeviceLogin
 from doppel_shared.ports import Credential
 from doppel_shared.testing import FakeGitHub, FakeGitHubHost
 from doppel_shared.types import PRRef
@@ -200,3 +209,141 @@ async def test_a_restart_sweeps_the_pods_a_dead_process_left(tmp_path, image, or
         assert owned(owner) == []
     finally:
         await second.stop()
+
+
+class DoppelwerkFixture:
+    """The Doppelwerk HTTP contract, with one review available for one signed-in seat."""
+
+    def __init__(self, head: str):
+        self.organization = str(uuid.uuid4())
+        self.runtime = str(uuid.uuid4())
+        self.user = str(uuid.uuid4())
+        self.job_id = str(uuid.uuid4())
+        self.seat = {
+            "id": str(uuid.uuid4()),
+            "payer": f"{self.organization}/{self.user}",
+            "user": {"id": self.user, "name": "CI reviewer", "login": "ci-reviewer"},
+        }
+        self.credential: str | None = None
+        self.seat_added = False
+        self.claimed = False
+        self.revoked = False
+        self.result: dict | None = None
+        self.job = {
+            "id": self.job_id,
+            "repository": REPO,
+            "number": 1,
+            "head_sha": head,
+            "base_branch": "main",
+            "payer": self.seat["payer"],
+            "doppel": {"handle": "ci-reviewer", "kind": "app", "files": {"SKILL.md": "Review the fixture."}},
+            "instructions": "Review this fixture.",
+        }
+
+    def app(self) -> web.Application:
+        app = web.Application()
+        app.router.add_post("/api/runtime/pair", self.pair)
+        app.router.add_post("/api/runtime/seats", self.add_seat)
+        app.router.add_post("/api/runtime/check-in", self.check_in)
+        app.router.add_post("/api/runtime/jobs/{job}", self.finish)
+        return app
+
+    def authorize(self, request: web.Request) -> None:
+        if self.credential is None or request.headers.get("Authorization") != f"Bearer {self.credential}":
+            raise web.HTTPUnauthorized()
+
+    async def pair(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        assert body["code"] == "dwp_linux_fixture"
+        assert self.credential is None and body["credential"].startswith("dwr_")
+        self.credential = body["credential"]
+        return web.json_response({
+            "runtime": {"id": self.runtime, "name": "Ubuntu runner"},
+            "organization": {"id": self.organization, "name": "CI workspace"},
+        })  # fmt: skip
+
+    async def add_seat(self, request: web.Request) -> web.Response:
+        self.authorize(request)
+        assert (await request.json())["code"] == "dws_linux_fixture"
+        self.seat_added = True
+        return web.json_response({"seat": self.seat})
+
+    async def check_in(self, request: web.Request) -> web.Response:
+        self.authorize(request)
+        body = await request.json()
+        if self.revoked:
+            return web.json_response({"revoked": True})
+        ready = any(seat["id"] == self.seat["id"] and seat["state"] == "connected" for seat in body["seats"])
+        jobs = []
+        if ready and body["capacity"] > 0 and not self.claimed:
+            self.claimed = True
+            jobs.append(self.job)
+        return web.json_response({
+            "revoked": False, "jobs": jobs, "seats": [self.seat] if self.seat_added else [],
+            "remove_seats": [], "stop": [], "check_in_after_seconds": 5,
+        })  # fmt: skip
+
+    async def finish(self, request: web.Request) -> web.Response:
+        self.authorize(request)
+        assert request.match_info["job"] == self.job_id
+        self.result = await request.json()
+        return web.json_response({"ok": True})
+
+
+class DeviceApprovalFixture:
+    async def start_device_login(self, home: Path) -> DeviceLogin:
+        async def approve() -> bool:
+            (home / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "tokens": {"access_token": "runner-ci-fixture"},
+                        "last_refresh": datetime.now(UTC).isoformat(),
+                    }
+                )
+            )
+            return True
+
+        return DeviceLogin("https://example.test/device", "TEST-CODE", approve)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires a native Linux Docker bridge")
+async def test_linux_runner_pairs_and_returns_a_bff_verdict(tmp_path, image, origin, monkeypatch):
+    _, head = origin
+    bff = DoppelwerkFixture(head)
+    model, model_url, authorization = await fake_model()
+    monkeypatch.setattr(codex_homes, "CHATGPT_BASE", model_url)
+    cfg_file = tmp_path / "runner.toml"
+    sandbox_runtime = os.environ.get("DOPPEL_TEST_SANDBOX_RUNTIME", "")
+    cfg_file.write_text(
+        f'data_dir = "{tmp_path / "data"}"\n'
+        f'[github]\nrepo_url = "{tmp_path / "repos"}/{{repo}}"\n'
+        f'[sandbox]\nimage = "{image}"\nruntime = "{sandbox_runtime}"\n'
+    )
+    cfg = load(cfg_file, env={f"DOPPEL_{name}_PORT": "0" for name in ("MODEL", "INTERNAL", "HEALTH")})
+    try:
+        async with TestServer(bff.app()) as server:
+            await pair(BffState(cfg.bff_dir), str(server.make_url("")), "dwp_linux_fixture")
+            rt = Runtime(cfg)
+            await rt.start()
+            try:
+                rt.broker.account = DeviceApprovalFixture()
+                seat, _ = await rt.bff.add_seat("dws_linux_fixture")
+                assert await rt.broker.wait_for_login(seat.payer)
+                await rt.bff.check_in()
+                await until(lambda: bff.result is not None, 90)
+                assert bff.result["status"] == "done", bff.result
+                assert bff.result["verdict"]["summary"] == VERDICT["summary"]
+                assert bff.result["verdict"]["head_sha"] == head
+                assert authorization == ["Bearer runner-ci-fixture"]
+                assert rt.ledger.value("SELECT tokens_used FROM slots WHERE bff_job = ?", (bff.job_id,)) == 15
+                assert not rt.jobs.pods
+                assert len(owned(rt.jobs.sandbox.owner)) == 1  # only the forwarder remains
+                assert rt.bound["internal"][0] == rt.bound["health"][0] == "127.0.0.1"
+                bff.revoked = True
+                assert await rt.bff.check_in() == {"revoked": True}
+                assert not rt.broker.homes.home(seat.payer).exists()
+                assert rt.bff.state.identity() is None
+            finally:
+                await rt.stop()
+    finally:
+        await model.cleanup()

@@ -4,8 +4,8 @@ No secret belongs in the file. Model sign-ins live in each payer's Codex home un
 
     data_dir = "/var/lib/doppel"          # the ledger and per-user Codex homes live under it
 
-    [listeners.model]                     # the gateway's model route: the only thing pods reach
-    host = "10.0.0.1"
+    [listeners.model]                     # defaults to loopback plus the local Docker bridge on Linux
+    # host = "10.0.0.1"                   # override the automatic bind for a custom network
     port = 8700
 
     [listeners.internal]                  # posting, broker, the runtime's API: never reachable from pods
@@ -39,16 +39,16 @@ No secret belongs in the file. Model sign-ins live in each payer's Codex home un
     payer_cap = 2
     host_cap = 10
 
-    [bff]                                 # Doppelwerk: this Mac pairs with it (`doppel-runtime pair`)
+    [bff]                                 # Doppelwerk: pair this runner with `doppel-runtime pair`
     url = "https://doppelwerk.ac0.app"    # the default for `pair --bff`; once paired, the pairing's own address counts
     check_in_seconds = 30                 # until the BFF says otherwise
 
     [sandbox]
     image = "doppel-sandbox:dev"
-    runtime = "runsc"                     # gVisor on summini; leave out for Docker's default
+    runtime = "runsc"                     # gVisor; leave out for Docker's default
     memory = "2g"
     cpus = "1"
-    gateway_target = ""                   # where pods' model calls go; default host.docker.internal:<model port>
+    gateway_target = ""                   # optional override for the model address as seen by Docker
 
     # The directory: until the BFF's records arrive (checkpoint 8), tenants, repos and reviewers live here.
     [[tenants]]
@@ -87,7 +87,7 @@ DEFAULT_PORTS = {"model": 8700, "internal": 8701, "health": 8702}
 
 @dataclass(frozen=True)
 class Listener:
-    host: str
+    host: str | None
     port: int
 
 
@@ -183,10 +183,11 @@ def load(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
     listeners = {}
     for name in LISTENERS:
         section = raw.get("listeners", {}).get(name, {})
-        host = env.get(f"DOPPEL_{name.upper()}_HOST") or section.get("host") or "127.0.0.1"
+        host = env.get(f"DOPPEL_{name.upper()}_HOST") or section.get("host")
         port = env.get(f"DOPPEL_{name.upper()}_PORT")
         listeners[name] = Listener(
-            host=host, port=int(port if port is not None else section.get("port", DEFAULT_PORTS[name]))
+            host=host if name == "model" else host or "127.0.0.1",
+            port=int(port if port is not None else section.get("port", DEFAULT_PORTS[name])),
         )
     homes = {payer: Path(p).expanduser() for payer, p in raw.get("broker", {}).get("homes", {}).items()}
     gh, it, sc, sb, bf = (raw.get(k, {}) for k in ("github", "intake", "scheduler", "sandbox", "bff"))
