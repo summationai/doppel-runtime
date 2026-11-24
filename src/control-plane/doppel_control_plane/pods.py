@@ -63,6 +63,21 @@ asyncio.run(main())
 """
 
 
+def write_doppel_files(root: Path, files: dict[str, str]) -> None:
+    """A doppel's files, readable by the reviewer. Each path must stay inside `root`: no absolute paths, no `..`, no dot
+    folders (the BFF checks the same; the pod is the boundary, but a file is never written outside the job's folder)."""
+    for name, text in files.items():
+        parts = name.split("/")
+        if not name or name.startswith("/") or any(p in ("", ".", "..") or p.startswith(".") for p in parts):
+            log.warning("skipped a doppel file with an unsafe path")
+            continue
+        path = root.joinpath(*parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    for path in [root, *root.rglob("*")] if root.exists() else []:
+        path.chmod(0o755 if path.is_dir() else 0o644)
+
+
 def docker(*args: str, check: bool = True) -> str:
     run = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=300)
     if check and run.returncode != 0:
@@ -215,6 +230,7 @@ class DockerPods:
         }))  # fmt: skip
         for path in (folder, folder / "diff.patch", folder / "job.json"):
             path.chmod(0o755 if path.is_dir() else 0o644)
+        write_doppel_files(folder / "doppel", job.files or {})
         return folder
 
     async def _run(self, pod: Pod, job: ReviewJob) -> None:

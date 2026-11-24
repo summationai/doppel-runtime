@@ -4,8 +4,9 @@
                     (the BFF keeps only its hash) -> which Mac this is, in which workspace
     add_seat()      a member's one-time seat code -> their seat, filed under the payer id `<workspace>/<member>`,
                     then Codex's device sign-in in that payer's own home: the member approves it in their browser
-    check_in()      every half minute: each seat's state, as the broker sees it, and this Mac's free capacity out;
-                    what the BFF wants back in: seats to sign out, pause, caps, and (checkpoint 4) jobs.
+    check_in()      every half minute: finished jobs' results, then each seat's state as the broker sees it, the jobs
+                    in hand and this Mac's free room out; back in: seats to sign out, pause, caps, jobs to stop, and
+                    new jobs, which the JobRunner (jobs.py) starts in the sandbox.
                     A Mac the BFF says was removed signs every seat out and forgets its credential.
 
 What lives on this disk, under `<data_dir>/bff/`, owner-only: `credential` (the Mac's own), `runtime.json`
@@ -140,6 +141,14 @@ class BffClient:
                 raise BffError(r.status, message or f"the BFF answered {r.status}")
             return data or {}
 
+    async def report(self, job_id: str, result: dict) -> int:
+        """A job's result. Returns the BFF's status: 409 means the job isn't this Mac's any more."""
+        try:
+            await self._post(f"jobs/{job_id}", result)
+            return 200
+        except BffError as e:
+            return e.status
+
     async def pair(self, code: str, credential: str) -> dict:
         return await self._post("pair", {"code": code, "credential": credential})
 
@@ -174,7 +183,7 @@ async def pair(state: BffState, url: str, code: str, *, replace: bool = False, v
 class BffLink:
     """The daemon's side: check-ins, and seats added through the internal listener (the CLI calls it)."""
 
-    def __init__(self, state: BffState, broker: Broker, *, host_cap: int, version: str, client=BffClient):
+    def __init__(self, state: BffState, broker: Broker, *, host_cap: int, version: str, client=BffClient, jobs=None):
         self.state = state
         self.broker = broker
         self.host_cap = host_cap
@@ -187,6 +196,17 @@ class BffLink:
         self.last_check_in: str | None = None
         self.last_error: str | None = None
         self._said_unpaired = False
+        self.jobs = jobs  # the JobRunner (jobs.py); None: this runtime takes no jobs
+        if jobs is not None:
+            jobs.on_result = self.flush
+
+    async def flush(self) -> None:
+        """Send finished jobs' results now, rather than at the next check-in."""
+        identity = self.state.identity()
+        if identity is None or self.jobs is None:
+            return
+        client = self._client_for(identity)
+        await self.jobs.flush(client.report)
 
     def _client_for(self, identity: Identity):
         return self._client(identity.url, self.state.credential(), version=self.version)
@@ -207,11 +227,18 @@ class BffLink:
             return None
         self._said_unpaired = False
         async with self._lock:
+            # Results first: a job finished here but not yet reported would look lost to the BFF.
+            if self.jobs is not None:
+                try:
+                    await self.jobs.flush(self._client_for(identity).report)
+                except Exception as e:
+                    log.warning("bff: couldn't send results (%s)", type(e).__name__)
             seats = self.state.seats()
+            running = self.jobs.running() if self.jobs is not None else []
             body = {
                 "version": self.version,
-                "capacity": max(0, self.host_cap),
-                "running": [],
+                "capacity": max(0, self.host_cap - len(running)),
+                "running": running,
                 "seats": [
                     {"id": sid, "state": self._seat_state(s.payer), "plan": None, "quota": None}
                     for sid, s in seats.items()
@@ -233,6 +260,8 @@ class BffLink:
             self.last_error = None
             self.last_check_in = now or None
             if answer.get("revoked"):
+                if self.jobs is not None:
+                    self.jobs.stop(running)
                 for seat in seats.values():
                     await self._sign_out(seat)
                 self.state.forget()
@@ -245,6 +274,11 @@ class BffLink:
             self.state.save_seats({s["id"]: _seat(s) for s in answer.get("seats", [])})
             self.paused = bool(answer.get("paused"))
             self.caps = answer.get("caps") or {}
+            if self.jobs is not None:
+                self.jobs.stop([j for j in answer.get("stop", []) if isinstance(j, str)])
+                for job in answer.get("jobs", []):
+                    if isinstance(job, dict):
+                        self.jobs.accept(job)
             after = answer.get("check_in_after_seconds")
             self.every = float(min(max(after, 5), 300)) if isinstance(after, int | float) else None
             return answer

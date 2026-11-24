@@ -17,6 +17,7 @@ class ReviewJob:
     instructions: str = ""  # the reviewer's rubric, from the PR's base (DSV-9)
     model: str | None = None  # None: the provider's default
     base_ref: str | None = None  # the PR's base branch, for the diff; None: the repo's default branch
+    files: dict[str, str] | None = None  # the doppel's own files (references and the like), put next to the diff
 
     def __repr__(self) -> str:  # keep the capability out of logs and tracebacks
         return f"ReviewJob(slot_id={self.slot_id}, reviewer={self.reviewer!r}, head_sha={self.head_sha!r})"
