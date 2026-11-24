@@ -5,13 +5,13 @@ One file per core feature. Each one records what is built, what it supports, and
 | File | Feature |
 | --- | --- |
 | [runtime.md](runtime.md) | The process: listeners, roles, config, restarts, the ledger |
-| [intake.md](intake.md) | Finding work on GitHub: polling, the call budget, webhooks |
-| [scheduler.md](scheduler.md) | Slots: when a reviewer starts, waits, retries or stops |
-| [merger.md](merger.md) | The one approval per PR |
-| [commands.md](commands.md) | `@doppelwerk …` in PR comments |
+| [intake.md](intake.md) | Moved to Doppelwerk: finding work on GitHub |
+| [scheduler.md](scheduler.md) | Moved to Doppelwerk: slots, waits, retries |
+| [merger.md](merger.md) | Moved to Doppelwerk: the one approval per PR |
+| [commands.md](commands.md) | Moved to Doppelwerk: `@doppelwerk …` in PR comments |
 | [credentials.md](credentials.md) | Codex sign-ins (the broker), capabilities and the model route (the gateway) |
 | [sandbox.md](sandbox.md) | The pod per PR, reviewers inside it, mirrors and checkouts |
-| [github.md](github.md) | The GitHub App: tokens, reads, posts, webhook signatures |
+| [github.md](github.md) | Moved to Doppelwerk: the GitHub App |
 
 ## How these relate to the other specs
 

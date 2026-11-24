@@ -1,5 +1,7 @@
 # GitHub App
 
+> **GitHub moved to Doppelwerk** (doppel-runtime BFF checkpoint 7, 2026-11-24): the Doppelcloud App, in `server/github/` (checkpoints 5 and 6); a runner never holds the App key, and fetches with each job's one-repository read token. The runtime's Python code and the tests named below are gone; this page is kept as the record of the decisions that were ported, now held by server/reviews/publish.test.ts in agentcloud-apps/doppelwerk. See [bff-split.md](../bff-split.md).
+
 The runtime acts on GitHub only as an App: never as a person. Reviews, comments and the merger's approval come from `<app-name>[bot]`. A personal doppel's review is labelled with its owner ("steven's doppel") but posted by the App, so it never mixes with the person's own reviews. Code: [doppel_gateway/github/](../../../src/gateway/doppel_gateway/github/). Setup: [docs/github-app.md](../../github-app.md).
 
 ## Supports

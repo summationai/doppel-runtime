@@ -6,7 +6,7 @@
     src/sandbox-runtime/ doppel_sandbox          -> shared        (it runs in the pod: never the runtime)
     src/control-plane/   doppel_control_plane    -> shared, gateway, model-provider  (the process)
 
-Inside the control plane, `core` and `store` import only `doppel_shared` and themselves.
+Inside the control plane, `store` imports only `doppel_shared` and itself.
 """
 
 import ast
@@ -30,7 +30,7 @@ ALLOWED = {
     "doppel_sandbox": {"doppel_shared"},
     "doppel_control_plane": {"doppel_shared", "doppel_gateway", "doppel_model_provider"},
 }
-CONTROL_PLANE_LAYERS = {"core": {"core"}, "store": {"store"}}  # besides doppel_shared
+CONTROL_PLANE_LAYERS = {"store": {"store"}}  # besides doppel_shared
 OURS = set(COMPONENTS.values())
 
 

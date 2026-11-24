@@ -1,5 +1,7 @@
 # Commands
 
+> **Commands moved to Doppelwerk** (doppel-runtime BFF checkpoint 7, 2026-11-24): `server/intake/commands.ts` (checkpoint 6). The runtime's Python code and the tests named below are gone; this page is kept as the record of the decisions that were ported, now held by server/intake/commands.test.ts, server/reviews/publish.test.ts in agentcloud-apps/doppelwerk. See [bff-split.md](../bff-split.md).
+
 `@doppelwerk <command> [reviewers…] [description]` in a PR comment. Each command is recorded once and acted on once, and always gets a visible answer: the reviews it asked for, or a reply saying why not. Code: [core/commands.py](../../../src/control-plane/doppel_control_plane/core/commands.py), `command` in [scheduler.py](../../../src/control-plane/doppel_control_plane/scheduler.py).
 
 ## Supports

@@ -1,5 +1,7 @@
 # Merger
 
+> **The merger moved to Doppelwerk** (doppel-runtime BFF checkpoint 7, 2026-11-24): `server/reviews/merger.ts` and `publish.ts` (checkpoints 5 and 6). The runtime's Python code and the tests named below are gone; this page is kept as the record of the decisions that were ported, now held by server/reviews/merger.test.ts, server/reviews/publish.test.ts in agentcloud-apps/doppelwerk. See [bff-split.md](../bff-split.md).
+
 One merger per PR, and it is the only thing that approves. Reviewers only comment. After every event it decides the PR's state for the current commit, from the reviewers' verdicts, CI, and open P0/P1 findings. It posts a formal review only when that decision changes, and keeps one status comment up to date. Code: [core/merger.py](../../../src/control-plane/doppel_control_plane/core/merger.py), `merge` and `merge_input` in [scheduler.py](../../../src/control-plane/doppel_control_plane/scheduler.py).
 
 ## Supports

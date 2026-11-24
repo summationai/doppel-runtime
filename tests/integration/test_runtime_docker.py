@@ -1,11 +1,7 @@
-"""Checkpoint 6a with real containers: the runtime as `serve` wires it, pods and all.
+"""The runtime as a runner, end to end in Docker: a job from a (fake) Doppelwerk is reviewed in a real pod.
 
-Opt-in (needs Docker; builds src/sandbox-runtime/Dockerfile):
-    DOPPEL_DOCKER_TESTS=1 uv run pytest tests/integration/test_runtime_docker.py
-
-The runtime builds its own sandbox from the config (DockerPods, mirrors, the egress forwarder). GitHub
-is the in-memory fake, the repo a local git repo, and the model a local fake behind the real gateway.
-Codex in the pod is real; so are intake, the scheduler, the gateway's capability check and the merger.
+Codex in the pod is real; so are the job runner, mirrors, pods, the gateway's capability check and token count, and
+the result going back to Doppelwerk. Only the model and Doppelwerk are local stand-ins.
 """
 
 import asyncio
@@ -18,10 +14,10 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 from doppel_control_plane.app import Runtime
+from doppel_control_plane.bff import BffState, pair
 from doppel_control_plane.config import load
 from doppel_control_plane.pods import docker
 from doppel_shared.ports import Credential
-from doppel_shared.testing import FakeGitHub, FakeGitHubHost
 from doppel_shared.types import PRRef
 
 pytestmark = pytest.mark.skipif(
@@ -116,20 +112,8 @@ def config(tmp_path: Path, image: str) -> Path:
 data_dir = "{tmp_path / "data"}"
 [github]
 repo_url = "{tmp_path / "repos"}/{{repo}}"
-[intake]
-poll_seconds = 0.2
-[scheduler]
-tick_seconds = 0.2
-settle_seconds = 0
 [sandbox]
 image = "{image}"
-[[tenants]]
-id = "summation"
-repos = ["{REPO}"]
-  [[tenants.reviewers]]
-  handle = "repo-owner"
-  kind = "app"
-  payer = "summation/u-steven"
 """)
     return f
 
@@ -147,46 +131,80 @@ def owned(owner_label: str) -> list[str]:
     return docker("ps", "-aq", "--filter", f"label=doppel.owner={owner_label}").split()
 
 
-async def test_serve_wiring_reviews_a_pr_in_a_real_pod_and_cleans_up(tmp_path, image, origin):
+async def fake_bff(jobs: list[dict]) -> tuple[web.AppRunner, str, dict]:
+    """Doppelwerk, as far as a runner can tell: pairing, one check-in handing out `jobs`, and results."""
+    results: dict = {}
+
+    async def do_pair(request):
+        return web.json_response(
+            {"runtime": {"id": "r1", "name": "runner"}, "organization": {"id": "org", "name": "Acme"}}
+        )
+
+    async def check_in(request):
+        given, jobs[:] = list(jobs), []
+        return web.json_response({"revoked": False, "paused": False, "caps": {}, "seats": [], "remove_seats": [],
+                                  "jobs": given, "stop": [], "check_in_after_seconds": 30})  # fmt: skip
+
+    async def result(request):
+        results[request.match_info["id"]] = await request.json()
+        return web.json_response({"accepted": True})
+
+    app = web.Application()
+    app.router.add_post("/api/runtime/pair", do_pair)
+    app.router.add_post("/api/runtime/check-in", check_in)
+    app.router.add_post("/api/runtime/jobs/{id}", result)
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    return runner, f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}", results
+
+
+def a_job(head: str) -> dict:
+    return {"id": "00000000-0000-4000-8000-000000000001", "repository": REPO, "repository_id": "1", "number": 1,
+            "head_sha": head, "base_branch": "main", "payer": "org/u-steven", "token": None, "focus": "",
+            "doppel": {"handle": "repo-owner", "kind": "app", "files": {"SKILL.md": "Review carefully."}},
+            "instructions": "## Your persona: repo-owner"}  # fmt: skip
+
+
+async def test_a_job_from_doppelwerk_is_reviewed_in_a_real_pod_and_the_pod_goes(tmp_path, image, origin):
     _, head = origin
-    runner, url, seen = await fake_model()
+    model, url, seen = await fake_model()
+    jobs = [a_job(head)]
+    bff, bff_url, results = await fake_bff(jobs)
     env = {f"DOPPEL_{n}_PORT": "0" for n in ("MODEL", "INTERNAL", "HEALTH")}
-    host, github = FakeGitHubHost(), FakeGitHub()
-    rt = Runtime(load(config(tmp_path, image), env=env), github=github, reader=host)
+    cfg = load(config(tmp_path, image), env=env)
+    await pair(BffState(cfg.bff_dir), bff_url, "dwp_x")
+    rt = Runtime(cfg)
     await rt.start()
     try:
+        await rt.roles["bff"].stop()  # this test checks in itself
         rt.gateway.credentials = FakeCredentials(url)
-        rt.broker.status = lambda payer: {"state": "connected"}
-        owner = rt.sandbox.owner
-
-        host.open(REPO, 1, head)
-        await until(lambda: rt.ledger.value("SELECT state FROM slots") == "posted")
-        slot = rt.ledger.one("SELECT * FROM slots")
-        assert slot["tokens_used"] == 15  # counted by the real gateway
-        assert seen == ["Bearer upstream-for-summation/u-steven"]  # the pod's capability was swapped out
-        assert len(owned(owner)) == 2  # the pod and its egress forwarder
-
-        host.checks[head] = "success"
-        await until(lambda: github.events(merger_only=True) == ["APPROVE"], 10)
-
-        host.close(REPO, 1, merged=True)
-        await until(lambda: rt.ledger.value("SELECT state FROM prs") == "merged", 10)
-        assert rt.ledger.value("SELECT pod_id FROM prs") is None
-        assert len(owned(owner)) == 1  # the pod is gone; the forwarder stays for the next PR
+        await rt.bff.check_in()
+        owner = rt.jobs.sandbox.owner
+        await until(lambda: "00000000-0000-4000-8000-000000000001" in results)
+        result = results["00000000-0000-4000-8000-000000000001"]
+        assert result["status"] == "done" and result["verdict"]["verdict"] == "clean"
+        assert result["verdict"]["doppel"] == "repo-owner" and result["verdict"]["head_sha"] == head
+        assert rt.ledger.value("SELECT tokens_used FROM slots") == 15  # counted by the real gateway
+        assert seen == ["Bearer upstream-for-org/u-steven"]  # the pod's capability was swapped for the payer's
+        assert len(owned(owner)) == 1  # the pod went with its last job; the egress forwarder stays
     finally:
         await rt.stop()
-        await runner.cleanup()
+        await model.cleanup()
+        await bff.cleanup()
     assert owned(owner) == []
 
 
 async def test_a_restart_sweeps_the_pods_a_dead_process_left(tmp_path, image, origin):
-    _, head = origin
+    bff, bff_url, _ = await fake_bff([])
     env = {f"DOPPEL_{n}_PORT": "0" for n in ("MODEL", "INTERNAL", "HEALTH")}
     cfg = load(config(tmp_path, image), env=env)
-    first = Runtime(cfg, github=FakeGitHub(), reader=FakeGitHubHost())
+    await pair(BffState(cfg.bff_dir), bff_url, "dwp_x")
+    first = Runtime(cfg)
     await first.start()
-    owner = first.sandbox.owner
-    first.sandbox.create_pod(PRRef("summation", REPO, 1))
+    owner = first.jobs.sandbox.owner
+    first.jobs.sandbox.create_pod(PRRef("org", REPO, 1))
     assert len(owned(owner)) == 2
     for role in first.roles.values():  # the process dies: nothing closes its pods
         await role.stop()
@@ -194,9 +212,10 @@ async def test_a_restart_sweeps_the_pods_a_dead_process_left(tmp_path, image, or
         await r.cleanup()
     first.ledger.close()
 
-    second = Runtime(cfg, github=FakeGitHub(), reader=FakeGitHubHost())
-    await second.start()
+    second = Runtime(cfg)
+    await second.start()  # a paired runner prepares its sandbox at start, sweeping what the dead one left
     try:
         assert owned(owner) == []
     finally:
         await second.stop()
+        await bff.cleanup()
