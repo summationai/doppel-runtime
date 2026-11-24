@@ -162,5 +162,6 @@ class Ledger:
         """At startup: slots left `running` by a crash go back to `queued`. Returns how many."""
         with self.tx() as db:
             return db.execute(
-                "UPDATE slots SET state='queued', started_at=NULL, capability_hash=NULL WHERE state='running'"
+                "UPDATE slots SET state='queued', started_at=NULL, capability_hash=NULL "
+                "WHERE state='running' AND bff_job IS NULL"  # a BFF job's slot is the job runner's (jobs.py)
             ).rowcount

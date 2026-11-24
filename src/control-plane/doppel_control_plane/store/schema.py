@@ -177,5 +177,13 @@ V5 = """
 ALTER TABLE prs ADD COLUMN base_ref TEXT;
 """
 
-MIGRATIONS = {1: V1, 2: V2, 3: V3, 4: V4, 5: V5}
+# BFF checkpoint 4: a job Doppelwerk's BFF handed this Mac runs as a local slot (the gateway's runs need one), tied to
+# the BFF's job id; its result is kept here until the BFF has accepted it.
+V6 = """
+ALTER TABLE slots ADD COLUMN bff_job TEXT;
+ALTER TABLE slots ADD COLUMN result TEXT;  -- the result JSON the BFF hasn't accepted yet
+CREATE UNIQUE INDEX slots_bff_job ON slots (bff_job) WHERE bff_job IS NOT NULL;
+"""
+
+MIGRATIONS = {1: V1, 2: V2, 3: V3, 4: V4, 5: V5, 6: V6}
 SCHEMA_VERSION = max(MIGRATIONS)

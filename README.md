@@ -65,6 +65,8 @@ doppel-runtime seat add dws_…    # a member's code (Settings → Macs → Add 
 doppel-runtime status            # which workspace, and each seat's state
 ```
 
+Reviews arrive with check-ins: each job (the PR, a one-repository read token, and the doppel's persona, scope and files) runs in a Docker pod (`[sandbox] image`, gVisor where `runtime = "runsc"`), on the payer's own sign-in through the gateway, and its verdict goes back to Doppelwerk. This Mac keeps no review rules.
+
 The pairing lives in `<data_dir>/bff/` (owner-only): the Mac's own credential, which Mac it is, and its seats. Each seat's Codex sign-in lives in the broker's home for payer `<workspace id>/<member id>`. A seat removed in Doppelwerk is signed out at the next check-in; a removed Mac signs every seat out and forgets its credential.
 
 ## Docs

@@ -30,6 +30,7 @@ from doppel_control_plane.config import LISTENERS, Config, read_secret
 from doppel_control_plane.core.matching import Limits
 from doppel_control_plane.directory import ConfigDirectory
 from doppel_control_plane.intake import Budget, Poller, Watched
+from doppel_control_plane.jobs import JobRunner
 from doppel_control_plane.roles import ROLE_NAMES, Role
 from doppel_control_plane.runs import LedgerRuns
 from doppel_control_plane.scheduler import Scheduler
@@ -52,6 +53,7 @@ class Runtime:
         github: GitHub | None = None,
         reader: GitHubReader | None = None,
         sandbox: Sandbox | None = None,
+        job_sandbox: Sandbox | None = None,
         clock=utcnow,
     ):
         self.config = config
@@ -68,6 +70,8 @@ class Runtime:
         self.clock = clock
         self.webhooks: Webhooks | None = None
         self._git_env = None  # repo -> git environment carrying the App's token (app mode)
+        self.jobs: JobRunner | None = None
+        self.job_sandbox = job_sandbox  # tests hand one in; otherwise Docker pods, made at the first job
         self._tasks: list[asyncio.Task] = []
 
     def _app(self, listener: str) -> web.Application:
@@ -113,8 +117,12 @@ class Runtime:
         self.broker = Broker(homes, CodexSdkAccount())
         self._tasks.append(asyncio.create_task(self.broker.keep_fresh()))
         self.gateway = ModelRoute(LedgerRuns(self.ledger), self.broker)
+        self.jobs = JobRunner(self.ledger, self._job_pods if self.job_sandbox is None else lambda: self.job_sandbox)
+        dropped = self.jobs.recover()
+        if dropped:
+            log.info("dropped %d BFF job(s) left running by the last process; Doppelwerk retries them", dropped)
         self.bff = BffLink(BffState(self.config.bff_dir), self.broker, host_cap=self.config.scheduler.host_cap,
-                           version=__version__)  # fmt: skip
+                           version=__version__, jobs=self.jobs)  # fmt: skip
         self.roles = {name: Role(name) for name in ROLE_NAMES}
         self.roles["bff"] = Role("bff", self._check_in, self.config.bff.check_in.total_seconds())
         await self._listen()  # first: the sandbox needs the model listener's port
@@ -165,6 +173,24 @@ class Runtime:
         self.roles["scheduler"] = Role("scheduler", tick, cfg.scheduler.tick.total_seconds())
         log.info("reviews on: %d repo(s) polled every %ss", len(repos), cfg.intake.poll.total_seconds())
 
+    def _job_pods(self) -> Sandbox:
+        """Pods for the BFF's jobs: the same sandbox, its verdicts and failures going to the job runner."""
+        from doppel_control_plane.mirrors import Mirrors
+        from doppel_control_plane.pods import DockerPods
+
+        cfg = self.config
+        owner = hashlib.sha256(f"jobs:{cfg.data_dir.resolve()}".encode()).hexdigest()[:12]
+        pods = DockerPods(
+            cfg.data_dir / "pods", Mirrors(cfg.data_dir / "mirrors", git_env=self.jobs.git_env),
+            image=cfg.sandbox.image,
+            gateway_target=cfg.sandbox.gateway_target or f"host.docker.internal:{self.bound['model'][1]}",
+            repo_url=lambda pr: cfg.github.repo_url.format(repo=pr.repo),
+            on_verdict=self.jobs.verdict, on_failed=self.jobs.failed,
+            runtime=cfg.sandbox.runtime, memory=cfg.sandbox.memory, cpus=cfg.sandbox.cpus, owner=owner,
+        )  # fmt: skip
+        pods.sweep()
+        return pods
+
     def _docker_pods(self) -> Sandbox:
         from doppel_control_plane.mirrors import Mirrors
         from doppel_control_plane.pods import DockerPods
@@ -205,6 +231,8 @@ class Runtime:
         for runner in reversed(self._runners):
             await runner.cleanup()
         self._runners.clear()
+        if self.jobs is not None:
+            await asyncio.to_thread(self.jobs.close)
         close = getattr(self.sandbox, "close", None)
         if close is not None and self.scheduler is not None:
             # The pods go; the ledger keeps their slots, which go back to queued at the next start.
