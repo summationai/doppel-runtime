@@ -1,6 +1,6 @@
 # The split: Doppelwerk's BFF orchestrates, the runtime runs reviews
 
-Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoints 0 to 3 are live (v63, v64, v66, v67); see section 5.
+Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoints 0 to 4 are live in the BFF (v63, v64, v66, v67, v69); see section 5.
 
 ## Decided
 
@@ -242,10 +242,25 @@ Eight checkpoints. Each one is built in the clone on its own branch, then shippe
 | 1 | One path, clean schema | Doppels become rows (details below). Removed: the companion, its Rust program, profiles, drafts, review history, analytics and the ChatGPT/Grok links. Settings lose their dead keys. | All 28 release checks pass on a fork of production, including the data checks. | **Live, v64**, plus v65 removing a leftover download (2026-11-24) |
 | 2 | Macs and seats | **BFF:** `runtimes` and `runtime_seats` tables, the "Add a Mac" pair code, seat codes, and the check-in POST. The Mac sends its roster; the answer says which seats to remove, whether to pause, the caps, and whether the runtime is revoked (§4b). **Runtime:** `doppel-runtime pair`, `seat add` (Codex device sign-in), and the check-in loop as a daemon. | A Mac paired to the local BFF shows its seats, and revoking it from the BFF stops it. | **Live, v66** (2026-11-24); runtime side in its own PR |
 | 3 | Intake and slots | The webhook makes one slot per (PR, head, doppel) (D2); force pushes are reviewed too. App doppels follow the workspace's event and personal doppels run when their person is requested (D4). Each slot gets its payer (D3). A slot not claimed within 2 h becomes `expired`. | A PR webhook makes the right slots, and stale ones expire. | **Live, v67** (2026-11-24) |
-| 4 | Jobs to the Mac | The check-in answer carries jobs, assigned only where the payer has a ready seat, within the payer and host caps. A job carries a one-repo read token and a snapshot of the doppel's rules. The Mac runs it in the sandbox and reports the result. | A Mac reviews a PR on a sandbox repo end to end. | Next |
-| 5 | Posting and the merger | The BFF posts each doppel's review as a COMMENT as Doppelcloud (D8), and the merger decides and approves (D7), with its status. When a slot expires, the merger stops waiting for a personal doppel, and an app doppel's PR stays unapproved with the reason. The merger's locked decisions and tests are ported. | A PR gets its doppels' comments and the merger's decision. | |
+| 4 | Jobs to the Mac | The check-in answer carries jobs, assigned only where the payer has a ready seat, within the payer and host caps. A job carries a one-repo read token and a snapshot of the doppel's rules. The Mac runs it in the sandbox and reports the result. | A Mac reviews a PR on a sandbox repo end to end. | **Live, v69** (2026-11-24); runtime side in its own PR |
+| 5 | Posting and the merger | The BFF posts each doppel's review as a COMMENT as Doppelcloud (D8), and the merger decides and approves (D7), with its status. When a slot expires, the merger stops waiting for a personal doppel, and an app doppel's PR stays unapproved with the reason. The merger's locked decisions and tests are ported. | A PR gets its doppels' comments and the merger's decision. | Next |
 | 6 | Commands and dispositions | `@doppelwerk review` and the other commands, dispositions on findings, and the reconcile poll (D9–D11). | — | Waits on RC's answer to #4: (a), (b) or (c) |
 | 7 | Cutover | The runtime's own intake, scheduler, merger and GitHub posting are deleted, and its ledger shrinks to the local tables. The Mac mini moves over, and the Codex crews can resume. | — | |
+
+Checkpoint 4 in detail (migration `20261124180000_slot_results`; BFF `server/slots/jobs.ts`; runtime `jobs.py`):
+
+- **Claim.** At each check-in, the Mac's room is its reported capacity, capped by the BFF's `host_cap`, and 0 while paused. It takes queued slots that are settled, unexpired and on the PR's current head, whose payer has a seat on this Mac that reported `connected`, at most 2 running per payer across Macs. Slots whose doppel was removed or switched off are cancelled there.
+- **The job** carries:
+  - the repo, PR, head and base;
+  - a one-repository `contents:read` token, or null where the App can't sign (mirrors, tests);
+  - the payer `<workspace>/<member>`;
+  - the doppel's files;
+  - instructions made from its SKILL.md, its scopes.yaml and the workspace's instructions.
+- **Leases.** Leases are 15 minutes, renewed by each check-in that lists the job. A job the Mac stops listing is lost (`mac_lost`), and a lease no check-in renews lapses (`lease_lapsed`, worker). Either way it's tried again after 30 s with a fresh 2 hours, up to 3 attempts, then `failed`. A removed Mac's jobs go back at once without spending an attempt. A job whose slot was cancelled (the PR moved on) comes back in `stop`.
+- **Result.** `POST /api/runtime/jobs/:id` takes a verdict, which is checked against the parts of the schema the merger relies on and kept, or a failure, which retries. Only the Mac holding the job can finish it, and only once (otherwise 409).
+- **Runtime.** It sends results before each check-in, so a finished job never looks lost. A job runs as a local ledger slot tied to its BFF id, so the gateway's payer lookup and token count are unchanged. The PR's pod is shared by its jobs and deleted after the last one. The doppel's files go to the job folder's `doppel/`. A dead process's jobs are dropped, and the BFF retries them.
+- **Proof** (local, everything real but the model): signed webhook → slot → claim → Docker pod running the Codex harness through the gateway (1,100 tokens counted to the payer) → verdict accepted → the PR page shows it reviewed on that Mac, in 5 s.
+- **Not yet:** posting verdicts to GitHub, and the merger (checkpoint 5); plan and quota in check-ins (sent as null).
 
 Checkpoint 3 in detail (migration `20261124140000_review_slots`, BFF `server/slots/`):
 
