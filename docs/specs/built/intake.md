@@ -1,5 +1,7 @@
 # Intake
 
+> **Intake moved to Doppelwerk** (doppel-runtime BFF checkpoint 7, 2026-11-24): webhooks plus a 10-minute sync, `server/intake/` and `server/slots/plan.ts` (checkpoint 3). The runtime's Python code and the tests named below are gone; this page is kept as the record of the decisions that were ported, now held by server/slots/slots.test.ts in agentcloud-apps/doppelwerk. See [bff-split.md](../bff-split.md).
+
 Turns GitHub's state into scheduler events. It reads repo listings, compares them with the ledger, and calls the scheduler for what changed. A timer polls every repo; a webhook polls one repo at once. Both use the same code. Code: [intake.py](../../../src/control-plane/doppel_control_plane/intake.py), [webhooks.py](../../../src/control-plane/doppel_control_plane/webhooks.py).
 
 ## Supports

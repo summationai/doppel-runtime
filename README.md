@@ -1,22 +1,19 @@
 # doppel-runtime
 
-The runtime behind Doppel as a Service: it reviews a tenant's GitHub PRs with each user's own Codex sign-in, in gVisor sandboxes, and posts as the doppelwerk GitHub App.
-
-Status: design only. Nothing is built or run yet.
+A runner for Doppelwerk: install it on a Mac (or Linux), pair it with a Doppelwerk workspace, and each member adds a seat with their own Codex sign-in. Doppelwerk decides what gets reviewed, by which doppel and on whose plan, posts the reviews as its GitHub App, and approves. This runner checks in, runs each review in a sandbox pod on the payer's own sign-in, and returns the verdict. Sign-ins never leave it. See [docs/specs/bff-split.md](docs/specs/bff-split.md).
 
 ## What it does
 
-One process with five roles:
+One process with four roles:
 
 | Role | Job |
 | --- | --- |
-| Intake | GitHub events in (webhooks via the BFF, plus a reconcile poll) |
-| Scheduler | Matches each reviewer slot to its PR's pod once its conditions hold (settle, payer cap, usage window, host cap); runs each PR's merger, the only thing that approves |
-| Broker | Keeps a Codex home per user at `<data_dir>/tenants/<tenant>/<user>/codex/`; refreshes under a per-user lock |
-| Gateway | Swaps the assigned user's token into model calls; the only GitHub writer |
-| Sandbox manager | One gVisor pod per PR, with a read-only checkout per head from a mirror per repo |
+| Broker | Keeps a Codex home per seat at `<data_dir>/tenants/<workspace>/<member>/codex/`; refreshes under a per-seat lock |
+| Gateway | The model route pods call: swaps a run's capability for its payer's sign-in, and counts tokens |
+| Sandbox manager | One pod per PR (gVisor where installed), with a read-only checkout per head from a mirror per repo |
+| BFF link | Check-ins with Doppelwerk: seats' states and the jobs in hand out; jobs, stops and control in; results back |
 
-Pods never hold a token or reach GitHub. Records (tenants, users, apps, rules) live in the BFF; secrets, sandboxes and GitHub writes live here.
+Pods never hold a token or reach GitHub. A job brings a one-repository, read-only token for the mirror's fetch only. Doppelwerk keeps everything else: workspaces, doppels and their rules, PRs, reviews, findings, the merger, the GitHub App.
 
 ## Layout
 
@@ -24,10 +21,9 @@ One repo, a uv workspace with one package per component. `src/` is the architect
 
 ```
 src/
-  control-plane/    doppel_control_plane    the runtime process: intake, scheduler, merger, ledger, app, cli
-    doppel_control_plane/core/     pure decisions: command parsing, payer choice, slot matching, the merger
-    doppel_control_plane/store/    the ledger and its schema
-  gateway/          doppel_gateway          the one door out of a pod: the model route; later GitHub posting
+  control-plane/    doppel_control_plane    the runtime process: the BFF link, jobs, pods, mirrors, ledger, app, cli
+    doppel_control_plane/store/    the ledger and its schema: the jobs in hand
+  gateway/          doppel_gateway          the one door out of a pod: the model route
   model-provider/   doppel_model_provider   the broker: each payer's sign-in and refresh
   sandbox-runtime/  doppel_sandbox          what runs inside a pod: harness and image (checkpoint 5)
   shared/           doppel_shared           contracts between them: types, ports, fakes for tests
@@ -40,7 +36,7 @@ tests/              cross-component: the architecture test, Docker integration t
 | `gateway`, `model-provider`, `sandbox-runtime` | `shared` |
 | `control-plane` | `shared`, `gateway`, `model-provider` (it runs them in-process) |
 
-Inside the control plane, `core` and `store` import only `shared`. Components talk through ports in `shared`: the gateway sees runs through `Runs` and sign-ins through `Credentials`, never the ledger or the broker's files. [tests/test_architecture.py](tests/test_architecture.py) enforces all of it, including that each component's pyproject declares what it imports. Each component keeps its own tests in `src/<component>/tests/`.
+Inside the control plane, `store` imports only `shared`. Components talk through ports in `shared`: the gateway sees runs through `Runs` and sign-ins through `Credentials`, never the ledger or the broker's files. [tests/test_architecture.py](tests/test_architecture.py) enforces all of it, including that each component's pyproject declares what it imports. Each component keeps its own tests in `src/<component>/tests/`.
 
 ## Develop
 
@@ -52,7 +48,7 @@ DOPPEL_DOCKER_TESTS=1 uv run pytest tests/integration   # needs Docker
 uv run doppel-runtime serve   # listeners on 127.0.0.1:8700 (model), 8701 (internal), 8702 (health)
 ```
 
-Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [src/control-plane/doppel_control_plane/config.py](src/control-plane/doppel_control_plane/config.py). It holds the tenants, repos and reviewers until the BFF's records arrive. With `github.mode = "off"` (the default), only the broker and gateway run; intake, the scheduler and the sandbox start once GitHub is configured (`mode = "app"`: see [docs/github-app.md](docs/github-app.md)). Progress is tracked in [docs/specs/checkpoints.md](docs/specs/checkpoints.md).
+Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [src/control-plane/doppel_control_plane/config.py](src/control-plane/doppel_control_plane/config.py). It holds only what this machine needs (data folder, listeners, sandbox, host cap). Progress is tracked in [docs/specs/bff-split.md](docs/specs/bff-split.md) §5.
 
 ## Onboarding a Mac
 

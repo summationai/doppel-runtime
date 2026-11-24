@@ -49,22 +49,19 @@ def test_serve_answers_health_on_every_listener(tmp_path):
         for name, port in ports.items():
             body = health(port)
             assert body["ok"] and body["listener"] == name
-            assert set(body["roles"]) == {"intake", "scheduler", "broker", "gateway", "sandbox", "bff"}
-            # GitHub isn't configured: the broker, gateway and BFF check-in run; intake, scheduler and sandbox wait.
-            assert body["roles"] == {"intake": False, "scheduler": False, "broker": True, "gateway": True,
-                                     "sandbox": False, "bff": True}  # fmt: skip
+            assert body["roles"] == {"broker": True, "gateway": True, "sandbox": True, "bff": True}
     finally:
         proc.send_signal(signal.SIGTERM)
         assert proc.wait(10) == 0
 
 
-def test_a_slot_left_running_by_a_crash_is_queued_again(tmp_path):
+def test_a_job_left_running_by_a_crash_is_dropped_for_doppelwerk_to_retry(tmp_path):
     proc, _ = start(tmp_path)
     db = sqlite3.connect(tmp_path / "ledger.db", isolation_level=None)
     db.execute("INSERT INTO prs (tenant, repo, pr, current_head, created_at) VALUES ('s','o/r',1,'aaa','t')")
     db.execute(
-        "INSERT INTO slots (pr_id, head_sha, reviewer, reason, state, queued_at, started_at) "
-        "VALUES (1,'aaa','steven','review_requested','running','t','t')"
+        "INSERT INTO slots (pr_id, head_sha, reviewer, reason, command_id, state, queued_at, started_at, bff_job) "
+        "VALUES (1,'aaa','steven','app','j1','running','t','t','j1')"
     )
     proc.kill()  # SIGKILL: no shutdown path runs
     proc.wait(10)
@@ -73,7 +70,8 @@ def test_a_slot_left_running_by_a_crash_is_queued_again(tmp_path):
     proc, ports = start(tmp_path)
     try:
         health(ports["health"])
-        assert db.execute("SELECT state FROM slots").fetchone()[0] == "queued"
+        # Its pod went with the process; Doppelwerk sees it missing from the next check-in and tries it again.
+        assert db.execute("SELECT state FROM slots").fetchone()[0] == "failed"
     finally:
         proc.send_signal(signal.SIGTERM)
         proc.wait(10)

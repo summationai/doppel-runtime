@@ -1,5 +1,7 @@
 # The GitHub App
 
+> This runtime no longer uses a GitHub App: Doppelwerk holds the App (Doppelcloud) and its key, posts the reviews and approves; a runner fetches with each job's one-repository read token. Kept for the record; see [specs/bff-split.md](specs/bff-split.md).
+
 How to create the App the runtime posts as, connect it, and check it works. For whoever has admin rights on the org, and for whoever runs the runtime.
 
 The App is the reviewers' identity on GitHub. Reviews, comments and the merger's approval appear as `<app-name>[bot]`. A personal reviewer's comments are labelled "steven's doppel" but come from the App, never from Steven's own account, so they never mix with his own reviews.

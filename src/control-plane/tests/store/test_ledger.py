@@ -15,20 +15,9 @@ def test_schema_is_migrated_and_uses_wal(ledger):
     assert ledger.schema_version == SCHEMA_VERSION
     assert ledger.journal_mode == "wal"
     tables = {r[0] for r in ledger._db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {
-        "prs",
-        "slots",
-        "commands",
-        "command_responses",
-        "findings",
-        "finding_anchors",
-        "posts",
-        "dispositions",
-        "pr_reviewers",
-        "merges",
-        "ci_status",
-        "usage_resets",
-    } <= tables
+    # One path: Doppelwerk keeps reviews, findings, commands and decisions; a runner keeps the jobs it runs.
+    assert {"prs", "slots", "usage_resets"} <= tables
+    assert not tables & {"commands", "findings", "posts", "dispositions", "pr_reviewers", "merges", "ci_status"}
 
 
 def test_reopening_does_not_migrate_twice(tmp_path):
@@ -78,17 +67,6 @@ def test_a_new_head_is_a_new_slot(ledger):
     assert ledger._db.execute("SELECT count(*) FROM slots").fetchone()[0] == 2
 
 
-def test_running_slots_go_back_to_queued(ledger):
-    pr = ledger.upsert_pr("summation", "summationai/sandbox", 7, head="aaa")
-    running, _ = ledger.queue_slot(pr, "aaa", "steven", "review_requested")
-    waiting, _ = ledger.queue_slot(pr, "aaa", "troy", "review_requested")
-    ledger.mark_running(running)
-    assert ledger.slot(running).state == "running"
-    assert ledger.requeue_running() == 1
-    assert ledger.slot(running).state == "queued"
-    assert ledger.slot(waiting).state == "queued"
-
-
 def test_states_outside_the_schema_are_refused(ledger):
     pr = ledger.upsert_pr("summation", "summationai/sandbox", 7, head="aaa")
     slot, _ = ledger.queue_slot(pr, "aaa", "steven", "review_requested")
@@ -108,7 +86,7 @@ def test_a_version_1_ledger_migrates_to_the_current_version(tmp_path):
     db.executescript(f"BEGIN; {V1} PRAGMA user_version=1; COMMIT;")
     db.close()
     led = Ledger(tmp_path / "old.db")
-    assert led.schema_version == SCHEMA_VERSION == 6
+    assert led.schema_version == SCHEMA_VERSION == 7
     cols = {r[1] for r in led._db.execute("PRAGMA table_info(slots)")}
     assert {"tokens_used", "token_budget", "provider_status", "provider_code", "provider_type"} <= cols
     assert {"bff_job", "result"} <= cols

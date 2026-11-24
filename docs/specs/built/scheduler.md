@@ -1,5 +1,7 @@
 # Scheduler
 
+> **Scheduling moved to Doppelwerk** (doppel-runtime BFF checkpoint 7, 2026-11-24): slots, settle, payer and host caps, leases and retries in `server/slots/` (checkpoints 3 and 4); this runner only runs the jobs it is given (`jobs.py`). The runtime's Python code and the tests named below are gone; this page is kept as the record of the decisions that were ported, now held by server/slots/slots.test.ts, server/slots/jobs.test.ts in agentcloud-apps/doppelwerk. See [bff-split.md](../bff-split.md).
+
 Every reviewer on a commit is a **slot**. Events (a PR opened, a push, a request, a command, a verdict) queue or stop slots. Every few seconds a tick starts each queued slot whose conditions all hold, in the PR's one pod. There is no fixed order of steps, only conditions. Code: [scheduler.py](../../../src/control-plane/doppel_control_plane/scheduler.py), [core/matching.py](../../../src/control-plane/doppel_control_plane/core/matching.py), [core/payer.py](../../../src/control-plane/doppel_control_plane/core/payer.py).
 
 ## Supports

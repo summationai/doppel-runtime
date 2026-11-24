@@ -20,7 +20,7 @@ One pod (a Docker container) per PR, living as long as the PR. Each reviewer run
 
 | Decision | Value | Why | Since | Proven by |
 | --- | --- | --- | --- | --- |
-| One pod per PR | Created at the PR's first start, kept across pushes, deleted on merge/close or after 3 idle days | One place per PR; cheaper than a pod per commit | 2026-11-19 | test_scheduler.py::test_dsv_10_a_push_stops_old_reviewers_and_queues_the_new_head_in_the_same_pod; integration/test_sandbox.py::test_a_new_head_appears_without_restarting_the_pod |
+| One pod per PR | Created for the PR's first job, shared by its jobs, deleted once its last job ends (the mirror stays) | One place per PR; cheaper than a pod per commit | 2026-11-24 (BFF checkpoint 4) | test_jobs.py::test_a_verdict_is_sent_at_once_and_the_pod_goes_when_its_last_job_ends; integration/test_sandbox.py::test_a_new_head_appears_without_restarting_the_pod |
 | The pod reaches only the gateway | `--internal` network plus a one-target forwarder; github.com and raw IPs fail | DSV-6, DSV-8 | 2026-11-19 | integration/test_sandbox.py::test_dsv_6_7_the_pod_reaches_nothing_holds_nothing_and_runs_nothing; integration/test_dsv8_network.py |
 | Hardened container | `--read-only` root, `--cap-drop ALL`, `no-new-privileges`, `--init`, 2 GB memory, 1 CPU, 512 processes, 512 MB `/tmp`; `/work` and `/job` read-only | Nothing from the PR can change the pod | 2026-11-20 (#10) | integration/test_sandbox.py::test_dsv_6_7_the_pod_reaches_nothing_holds_nothing_and_runs_nothing |
 | Nothing from the PR runs | No compilers, package managers, `gh` or credentials in the image; the prompt forbids running anything | DSV-7 | 2026-11-20 (#10) | integration/test_sandbox.py::test_dsv_6_7_the_pod_reaches_nothing_holds_nothing_and_runs_nothing (a `postinstall` canary never fires) |
@@ -31,7 +31,7 @@ One pod (a Docker container) per PR, living as long as the PR. Each reviewer run
 | The runner stamps who reviewed what | `doppel`, `pr`, `head_sha` and `engine` are set by the harness, never taken from the model | The model mustn't claim another reviewer or commit | 2026-11-20 (#10) | test_review.py::test_the_runner_stamps_who_reviewed_what_not_the_model |
 | The job file holds no capability | Only in the process's environment | Another user could read the file | 2026-11-20 (#10) | test_review.py::test_a_job_file_holds_no_capability |
 | One mirror per repo, one lock per repo | A bare clone (`--filter=blob:none`); everything touching it holds that repo's lock | Reviewers on one PR start together; concurrent fetches collided | 2026-11-20 (#11) | test_mirrors.py::test_reviewers_preparing_at_once_dont_collide |
-| The diff is against the PR's base | GitHub's `base.ref`, stored by intake; the repo's default branch only when unknown | A PR into `release/*` must diff against that branch | 2026-11-20 (#13) | test_mirrors.py::test_the_diff_is_against_the_prs_base; test_intake.py::test_the_prs_base_reaches_the_reviewer_job |
+| The diff is against the PR's base | The job's `base_branch`, from Doppelwerk; the repo's default branch only when unknown | A PR into `release/*` must diff against that branch | 2026-11-20 (#13) | test_mirrors.py::test_the_diff_is_against_the_prs_base; test_jobs.py::test_a_job_starts_in_its_prs_pod_with_the_doppels_rules_and_its_run_pays_its_payer |
 | Runtime: runc on laptops, runsc on summini | `[sandbox] runtime = "runsc"` | gVisor for strangers' code | 2026-11-20 (#12) | not tested (checkpoint 7) |
 
 ## Not yet
