@@ -1,6 +1,6 @@
 # The split: Doppelwerk's BFF orchestrates, the runtime runs reviews
 
-Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoints 0 to 2 are live (v63, v64, v66); see section 5.
+Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoints 0 to 3 are live (v63, v64, v66, v67); see section 5.
 
 ## Decided
 
@@ -241,11 +241,20 @@ Eight checkpoints. Each one is built in the clone on its own branch, then shippe
 | 0 | Regroup the BFF | The server is grouped as `platform/`, `github/`, `workspace/`, `intake/`, `reviews/` and `shared/`, and `tests/architecture.test.ts` enforces the imports. Behaviour is unchanged. | 75 tests pass, 2 are skipped. | **Live, v63** (2026-11-23) |
 | 1 | One path, clean schema | Doppels become rows (details below). Removed: the companion, its Rust program, profiles, drafts, review history, analytics and the ChatGPT/Grok links. Settings lose their dead keys. | All 28 release checks pass on a fork of production, including the data checks. | **Live, v64**, plus v65 removing a leftover download (2026-11-24) |
 | 2 | Macs and seats | **BFF:** `runtimes` and `runtime_seats` tables, the "Add a Mac" pair code, seat codes, and the check-in POST. The Mac sends its roster; the answer says which seats to remove, whether to pause, the caps, and whether the runtime is revoked (§4b). **Runtime:** `doppel-runtime pair`, `seat add` (Codex device sign-in), and the check-in loop as a daemon. | A Mac paired to the local BFF shows its seats, and revoking it from the BFF stops it. | **Live, v66** (2026-11-24); runtime side in its own PR |
-| 3 | Intake and slots | The webhook makes one slot per (PR, head, doppel) (D2); force pushes are reviewed too. App doppels follow the workspace's event and personal doppels run when their person is requested (D4). Each slot gets its payer (D3). A slot not claimed within 2 h becomes `expired`. | A PR webhook makes the right slots, and stale ones expire. | Next |
-| 4 | Jobs to the Mac | The check-in answer carries jobs, assigned only where the payer has a ready seat, within the payer and host caps. A job carries a one-repo read token and a snapshot of the doppel's rules. The Mac runs it in the sandbox and reports the result. | A Mac reviews a PR on a sandbox repo end to end. | |
+| 3 | Intake and slots | The webhook makes one slot per (PR, head, doppel) (D2); force pushes are reviewed too. App doppels follow the workspace's event and personal doppels run when their person is requested (D4). Each slot gets its payer (D3). A slot not claimed within 2 h becomes `expired`. | A PR webhook makes the right slots, and stale ones expire. | **Live, v67** (2026-11-24) |
+| 4 | Jobs to the Mac | The check-in answer carries jobs, assigned only where the payer has a ready seat, within the payer and host caps. A job carries a one-repo read token and a snapshot of the doppel's rules. The Mac runs it in the sandbox and reports the result. | A Mac reviews a PR on a sandbox repo end to end. | Next |
 | 5 | Posting and the merger | The BFF posts each doppel's review as a COMMENT as Doppelcloud (D8), and the merger decides and approves (D7), with its status. When a slot expires, the merger stops waiting for a personal doppel, and an app doppel's PR stays unapproved with the reason. The merger's locked decisions and tests are ported. | A PR gets its doppels' comments and the merger's decision. | |
 | 6 | Commands and dispositions | `@doppelwerk review` and the other commands, dispositions on findings, and the reconcile poll (D9–D11). | — | Waits on RC's answer to #4: (a), (b) or (c) |
 | 7 | Cutover | The runtime's own intake, scheduler, merger and GitHub posting are deleted, and its ledger shrinks to the local tables. The Mac mini moves over, and the Codex crews can resume. | — | |
+
+Checkpoint 3 in detail (migration `20261124140000_review_slots`, BFF `server/slots/`):
+
+- **Where events come from.** Signed `pull_request` webhooks, plus a sync of each enrolled repository's recently updated PRs every 10 minutes for deliveries GitHub never made (D11). Both go through one planner that compares the saved PR with GitHub's, under a row lock, so an event read twice changes nothing and a delivery older than the saved PR is ignored (except an un-request).
+- **Slots.** `review_slots` holds one row per (PR, head, doppel) (D2), with its payer (D3): a personal doppel's person, found by their linked GitHub login, or an app doppel's named payer. No payer means `waiting_on = no_payer`. `pull_request_doppels` records which doppels are on each PR.
+- **Triggers (D4).** App doppels: `opened` reviews opened, reopened and marked-ready PRs; `push` and `all` also review every new head, force pushes included. They run only on insiders' PRs (OWNER, MEMBER, COLLABORATOR) that pass the workspace's filters. Path filters wait until a PR's files are known. A repository's ownership map, when it names doppels, limits its app doppels to those. Personal doppels review when their person is requested, whatever the event setting, and every new head after that. A person's own review keeps their doppel (`pull_request_review`); only an un-request removes it.
+- **Timing.** Every trigger sets a 90 s settle. A new head cancels the old head's slots (`head_moved`). Drafts wait unless the workspace reviews drafts. Closing or merging cancels everything. A sync meeting a PR opened over an hour ago records it without reviewing it, so connecting a repository doesn't review its backlog. The worker expires slots no Mac took within 2 hours (`unclaimed`), checking at least every 5 minutes.
+- **Shown** on the PR's page: each doppel's review of each head, its state and who pays.
+- **Not yet:** path-level ownership routing (needs the PR's files when the review is planned); cancelling queued slots when a doppel is removed from the workspace (checkpoint 4's claim skips them); commands (checkpoint 6).
 
 Checkpoint 1 in detail (migration `20261124070000_runtime_only`):
 
