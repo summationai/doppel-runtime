@@ -1,6 +1,6 @@
 # The split: Doppelwerk's BFF orchestrates, the runtime runs reviews
 
-Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoints 0 to 5 are live in the BFF (v63, v64, v66, v67, v69, v70); see section 5.
+Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoints 0 to 6 are live in the BFF (v63, v64, v66, v67, v69, v70, v71); see section 5.
 
 ## Decided
 
@@ -245,8 +245,28 @@ Eight checkpoints. Each one is built in the clone on its own branch, then shippe
 | 3 | Intake and slots | The webhook makes one slot per (PR, head, doppel) (D2); force pushes are reviewed too. App doppels follow the workspace's event and personal doppels run when their person is requested (D4). Each slot gets its payer (D3). A slot not claimed within 2 h becomes `expired`. | A PR webhook makes the right slots, and stale ones expire. | **Live, v67** (2026-11-24) |
 | 4 | Jobs to the Mac | The check-in answer carries jobs, assigned only where the payer has a ready seat, within the payer and host caps. A job carries a one-repo read token and a snapshot of the doppel's rules. The Mac runs it in the sandbox and reports the result. | A Mac reviews a PR on a sandbox repo end to end. | **Live, v69** (2026-11-24); runtime side in its own PR |
 | 5 | Posting and the merger | The BFF posts each doppel's review as a COMMENT as Doppelcloud (D8), and the merger decides and approves (D7), with its status. When a slot expires, the merger stops waiting for a personal doppel, and an app doppel's PR stays unapproved with the reason. The merger's locked decisions and tests are ported. | A PR gets its doppels' comments and the merger's decision. | **Live, v70** (2026-11-24) |
-| 6 | Commands and dispositions | `@doppelwerk review` and the other commands, dispositions on findings, and the reconcile poll (D9–D11). | — | Next (RC #4 decided: (b) plus doppel auto-resolve) |
-| 7 | Cutover | The runtime's own intake, scheduler, merger and GitHub posting are deleted, and its ledger shrinks to the local tables. The Mac mini moves over, and the Codex crews can resume. | — | |
+| 6 | Commands and dispositions | `@doppelwerk review` and the other commands, dispositions on findings, and the reconcile poll (D9–D11). | — | **Live, v71** (2026-11-24) |
+| 7 | Cutover | The runtime's own intake, scheduler, merger and GitHub posting are deleted, and its ledger shrinks to the local tables. The Mac mini moves over, and the Codex crews can resume. | — | Next |
+
+Checkpoint 6 in detail (migration `20261124220000_commands_and_findings`; BFF `server/intake/commands.ts`, `server/slots/jobs.ts`, `server/reviews/publish.ts`):
+
+- **Commands (D9)**, ported from `core/commands.py` with its locked decisions:
+  - `@doppelwerk review [doppels…] [what to look at]` and `help`, through the `issue_comment` webhook;
+  - insiders only (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR), never bots;
+  - a person's doppel only where they were requested, on its own payer;
+  - acted on once (keyed by the comment);
+  - no settle wait, and it follows the head;
+  - always answered: help, refusals, and a review that failed or found no Mac.
+  A command's reviews are their own slots (`review_slots.command_id`), so a command can ask again for a head a doppel already reviewed.
+- **Findings until they're closed (D10, RC #4: (b) plus doppel auto-resolve):**
+  - `review_findings` keeps each finding of a review that was on the current head, with its GitHub comment, and it stays open across commits.
+  - A job's instructions list its doppel's own open findings with keys. The verdict's `fixed` closes those keys, only that doppel's, and Doppelcloud resolves their threads (GraphQL `resolveReviewThread`).
+  - A person resolving a finding's thread closes it. GitHub allows only write access and the PR's author, which is (b). Unresolving reopens it.
+  - The `pull_request_review_thread` webhook reports this, and the merger also reads the PR's threads when an open P0/P1 has one, catching missed deliveries.
+  - The merger blocks on the PR's open introduced P0/P1s, whatever commit raised them.
+- **Shown** on the PR's page: a Findings card (open and whether it blocks, fixed by which doppel, resolved by whom); command reviews are labelled.
+- **Runtime** ([#20](https://github.com/summationai/doppel-runtime/pull/20)): the verdict schema allows `fixed`, the prompt asks for it, and a command's focus reaches the reviewer. Rebuild the sandbox image to pick it up.
+- **Not yet:** closing a finding from Doppelwerk's own page (D10's UI source); commands beyond `review` and `help`.
 
 Checkpoint 5 in detail (migration `20261124200000_posting_and_merger`; BFF `server/reviews/merger.ts`, `publish.ts`, `server/github/reviews.ts`):
 
