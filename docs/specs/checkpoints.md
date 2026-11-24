@@ -1,5 +1,7 @@
 # Build checkpoints
 
+> Superseded: the build continued as the split with Doppelwerk's BFF, tracked in [bff-split.md](bff-split.md) §5. Kept for the record.
+
 How [doppel-service.md](doppel-service.md) gets built, in checkpoints that each end in a run seen working. A checkpoint is done only when every "Done when" line has been shown by a run or a test, not by reading the code.
 
 As of 2026-11-19 (Thursday). "Friday" in the spec is 2026-11-20.

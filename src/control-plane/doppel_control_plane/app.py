@@ -1,12 +1,12 @@
-"""The runtime process: open the ledger, recover from a crash, start the roles and three listeners.
+"""The runtime process, a runner for Doppelwerk: open the ledger, recover from a crash, start the roles and three
+listeners (docs/specs/bff-split.md). Doppelwerk decides what to review and who pays, posts, and approves; this process
+checks in, runs the jobs it's given in sandbox pods on its seats' own sign-ins, and returns the verdicts.
 
 Listeners are separate sockets so the network can keep pods away from all but the model route
-(DSV-8): pods reach `model`; `internal` (posting, broker, API) and `health` stay off the pod network.
+(DSV-8): pods reach `model`; `internal` (the broker, seats, status) and `health` stay off the pod network.
 
-The broker, the gateway and the BFF check-in always run (the check-in waits quietly until this runner
-is paired). Intake, the scheduler and the sandbox run once GitHub is configured (`github.mode =
-"app"`: the App's REST ports), or when a caller hands in the GitHub ports (tests, the local demo).
-Webhooks are taken on the internal listener when a secret is configured.
+Every role always runs. The check-in waits quietly until this runner is paired; a paired runner prepares its sandbox at
+start, which sweeps away pods a dead process left.
 """
 
 from __future__ import annotations
@@ -22,22 +22,16 @@ from aiohttp import web
 from doppel_gateway import MODEL_MAX_BYTES, ModelRoute
 from doppel_model_provider import Broker, CodexHomes, CodexSdkAccount
 from doppel_model_provider import api as broker_api
-from doppel_shared.ports import GitHub, GitHubReader, Sandbox
+from doppel_shared.ports import Sandbox
 
 from doppel_control_plane import __version__
 from doppel_control_plane.bff import BffLink, BffState
 from doppel_control_plane.bff import add_routes as bff_routes
-from doppel_control_plane.config import LISTENERS, Config, read_secret
-from doppel_control_plane.core.matching import Limits
-from doppel_control_plane.directory import ConfigDirectory
-from doppel_control_plane.intake import Budget, Poller, Watched
+from doppel_control_plane.config import LISTENERS, Config
 from doppel_control_plane.jobs import JobRunner
 from doppel_control_plane.roles import ROLE_NAMES, Role
 from doppel_control_plane.runs import LedgerRuns
-from doppel_control_plane.scheduler import Scheduler
 from doppel_control_plane.store import Ledger
-from doppel_control_plane.webhooks import PATH as WEBHOOK_PATH
-from doppel_control_plane.webhooks import Webhooks
 
 log = logging.getLogger("doppel_control_plane")
 
@@ -47,16 +41,7 @@ def utcnow() -> datetime:
 
 
 class Runtime:
-    def __init__(
-        self,
-        config: Config,
-        *,
-        github: GitHub | None = None,
-        reader: GitHubReader | None = None,
-        sandbox: Sandbox | None = None,
-        job_sandbox: Sandbox | None = None,
-        clock=utcnow,
-    ):
+    def __init__(self, config: Config, *, job_sandbox: Sandbox | None = None, clock=utcnow):
         self.config = config
         self.ledger: Ledger | None = None
         self.roles: dict[str, Role] = {}
@@ -66,14 +51,9 @@ class Runtime:
         self.gateway: ModelRoute | None = None
         self.broker: Broker | None = None
         self.bff: BffLink | None = None
-        self.github, self.reader, self.sandbox = github, reader, sandbox
-        self.scheduler: Scheduler | None = None
-        self.poller: Poller | None = None
-        self.clock = clock
-        self.webhooks: Webhooks | None = None
-        self._git_env = None  # repo -> git environment carrying the App's token (app mode)
         self.jobs: JobRunner | None = None
-        self.job_sandbox = job_sandbox  # tests hand one in; otherwise Docker pods, made at the first job
+        self.job_sandbox = job_sandbox  # tests hand one in; otherwise Docker pods
+        self.clock = clock
         self._tasks: list[asyncio.Task] = []
 
     def _app(self, listener: str) -> web.Application:
@@ -95,26 +75,13 @@ class Runtime:
             self.gateway.add_routes(app)
         if listener == "internal" and self.broker is not None:  # sign-ins: never on the model listener
             broker_api.add_routes(app, self.broker)
-        if listener == "internal" and self.bff is not None:  # seats, added from the runner's CLI
+        if listener == "internal" and self.bff is not None:  # seats, added from this runner's CLI
             bff_routes(app, self.bff)
-        if listener == "internal":  # GitHub's events, forwarded by the BFF; 404 until webhooks are configured
-
-            async def webhook(request: web.Request) -> web.StreamResponse:
-                if self.webhooks is None:
-                    raise web.HTTPNotFound()
-                return await self.webhooks.handle(request)
-
-            app.router.add_post(WEBHOOK_PATH, webhook)
         return app
 
     async def start(self) -> None:
-        if self.config.github.mode == "app" and (self.github is None or self.reader is None):
-            self._github_app()
         self.config.data_dir.mkdir(parents=True, exist_ok=True)
         self.ledger = Ledger(self.config.ledger_path)
-        requeued = self.ledger.requeue_running()
-        if requeued:
-            log.info("requeued %d slot(s) left running by the last process", requeued)
         homes = CodexHomes(self.config.tenants_dir, self.config.codex_homes)
         self.broker = Broker(homes, CodexSdkAccount())
         self._tasks.append(asyncio.create_task(self.broker.keep_fresh()))
@@ -122,99 +89,43 @@ class Runtime:
         self.jobs = JobRunner(self.ledger, self._job_pods if self.job_sandbox is None else lambda: self.job_sandbox)
         dropped = self.jobs.recover()
         if dropped:
-            log.info("dropped %d BFF job(s) left running by the last process; Doppelwerk retries them", dropped)
-        self.bff = BffLink(BffState(self.config.bff_dir), self.broker, host_cap=self.config.scheduler.host_cap,
-                           version=__version__, jobs=self.jobs)  # fmt: skip
+            log.info("dropped %d job(s) left running by the last process; Doppelwerk retries them", dropped)
+        state = BffState(self.config.bff_dir)
+        self.bff = BffLink(state, self.broker, host_cap=self.config.host_cap, version=__version__, jobs=self.jobs)
         self.roles = {name: Role(name) for name in ROLE_NAMES}
         self.roles["bff"] = Role("bff", self._check_in, self.config.bff.check_in.total_seconds())
         await self._listen()  # first: the sandbox needs the model listener's port
-        if self.github is not None or self.config.github.mode != "off":
-            self._wire_reviews()
+        if state.identity() is not None:
+            try:
+                _ = self.jobs.sandbox  # made now, so a restart sweeps what a dead process left
+            except Exception as e:
+                log.error("the sandbox isn't ready (%s): jobs will fail until it is", type(e).__name__)
         for role in self.roles.values():
-            if role.name in ("broker", "gateway", "bff") or self.scheduler is not None:
-                await role.start()
+            await role.start()
 
     async def _check_in(self) -> None:
         await self.bff.check_in(self.clock().isoformat())
         if self.bff.every:
             self.roles["bff"].every = self.bff.every
 
-    def _github_app(self) -> None:
-        """The App's REST ports: one client, its installation tokens shared by reads, posts and fetches."""
-        from doppel_gateway.github import AppAuth, GitHubClient, RestGitHub, RestReader
-
-        gh = self.config.github
-        auth = AppAuth(gh.app_id, read_secret(gh.private_key), gh.api_url)
-        installations = {repo: t.installation_id for t in self.config.tenants for repo in t.repos}
-        client = GitHubClient(auth, installations)
-        self.github, self.reader, self._git_env = RestGitHub(client), RestReader(client), client.git_env
-        log.info("github: App %s, %d repo(s)", gh.app_id, len(installations))
-
-    def _wire_reviews(self) -> None:
-        """Intake, the scheduler and the sandbox: GitHub's state in, reviews and the merger's decisions out."""
-        cfg = self.config
-        if self.sandbox is None:
-            self.sandbox = self._docker_pods()
-        directory = ConfigDirectory(cfg.tenants, lambda payer: self.broker.status(payer)["state"] == "connected")
-        limits = Limits(settle=cfg.scheduler.settle, payer_cap=cfg.scheduler.payer_cap, host_cap=cfg.scheduler.host_cap)
-        self.scheduler = Scheduler(self.ledger, directory, self.sandbox, self.github, limits)
-        repos = [Watched(t.id, repo) for t in cfg.tenants for repo in t.repos]
-        self.poller = Poller(self.ledger, self.scheduler, self.reader, directory, repos,
-                             Budget(cfg.intake.calls_per_hour), lookback=cfg.intake.lookback,
-                             auto_review=cfg.intake.auto_review)  # fmt: skip
-        if cfg.github.webhook_secret is not None:
-            self.webhooks = Webhooks(read_secret(cfg.github.webhook_secret).encode(), self.poller, self.clock)
-
-        async def poll() -> None:
-            await self.poller.poll(self.clock())
-
-        async def tick() -> None:
-            self.scheduler.tick(self.clock())
-
-        self.roles["intake"] = Role("intake", poll, cfg.intake.poll.total_seconds())
-        self.roles["scheduler"] = Role("scheduler", tick, cfg.scheduler.tick.total_seconds())
-        log.info("reviews on: %d repo(s) polled every %ss", len(repos), cfg.intake.poll.total_seconds())
-
     def _job_pods(self) -> Sandbox:
-        """Pods for the BFF's jobs: the same sandbox, its verdicts and failures going to the job runner."""
+        """Docker pods for the jobs: verdicts and failures go to the job runner, fetches carry each job's token."""
         from doppel_control_plane.mirrors import Mirrors
         from doppel_control_plane.pods import DockerPods
 
         cfg = self.config
         owner = hashlib.sha256(f"jobs:{cfg.data_dir.resolve()}".encode()).hexdigest()[:12]
+        gateway_host = self._model_bridge or "host.docker.internal"
         pods = DockerPods(
             cfg.data_dir / "pods", Mirrors(cfg.data_dir / "mirrors", git_env=self.jobs.git_env),
             image=cfg.sandbox.image,
-            gateway_target=self._gateway_target(),
-            repo_url=lambda pr: cfg.github.repo_url.format(repo=pr.repo),
+            gateway_target=cfg.sandbox.gateway_target or f"{gateway_host}:{self.bound['model'][1]}",
+            repo_url=lambda pr: cfg.repo_url.format(repo=pr.repo),
             on_verdict=self.jobs.verdict, on_failed=self.jobs.failed,
             runtime=cfg.sandbox.runtime, memory=cfg.sandbox.memory, cpus=cfg.sandbox.cpus, owner=owner,
         )  # fmt: skip
         pods.sweep()
         return pods
-
-    def _docker_pods(self) -> Sandbox:
-        from doppel_control_plane.mirrors import Mirrors
-        from doppel_control_plane.pods import DockerPods
-
-        cfg = self.config
-        # Pods from a process that died are orphans: this process can't drive them. Start clean.
-        self.ledger.execute("UPDATE prs SET pod_id=NULL WHERE pod_id IS NOT NULL")
-        owner = hashlib.sha256(str(cfg.data_dir.resolve()).encode()).hexdigest()[:12]
-        pods = DockerPods(
-            cfg.data_dir / "pods", Mirrors(cfg.data_dir / "mirrors", git_env=self._git_env), image=cfg.sandbox.image,
-            gateway_target=self._gateway_target(),
-            repo_url=lambda pr: cfg.github.repo_url.format(repo=pr.repo),
-            on_verdict=lambda slot, v: self.scheduler.verdict(slot, v, self.clock()),
-            on_failed=lambda slot, why: self.scheduler.slot_failed(slot, why, self.clock()),
-            runtime=cfg.sandbox.runtime, memory=cfg.sandbox.memory, cpus=cfg.sandbox.cpus, owner=owner,
-        )  # fmt: skip
-        pods.sweep()
-        return pods
-
-    def _gateway_target(self) -> str:
-        host = self._model_bridge or "host.docker.internal"
-        return self.config.sandbox.gateway_target or f"{host}:{self.bound['model'][1]}"
 
     async def _listen(self) -> None:
         for name in LISTENERS:
@@ -255,11 +166,6 @@ class Runtime:
         self._runners.clear()
         if self.jobs is not None:
             await asyncio.to_thread(self.jobs.close)
-        close = getattr(self.sandbox, "close", None)
-        if close is not None and self.scheduler is not None:
-            # The pods go; the ledger keeps their slots, which go back to queued at the next start.
-            self.ledger.execute("UPDATE prs SET pod_id=NULL WHERE pod_id IS NOT NULL")
-            await asyncio.to_thread(close)
         if self.ledger is not None:
             self.ledger.close()
 

@@ -1,14 +1,15 @@
-"""The control plane: the runtime process (docs/specs/doppel-service.md).
+"""The control plane: the runtime process, a runner for Doppelwerk (docs/specs/bff-split.md).
 
-    core/        pure decisions: command parsing, payer choice, slot matching, the merger
-    store/       the ledger and its schema
-    scheduler    queues slots, starts ready ones in their PR's pod, runs the merger
+    bff          pairing, seats and check-ins with Doppelwerk
+    jobs         the jobs Doppelwerk hands this runner, run in the sandbox
+    pods, mirrors  one pod per PR; one bare mirror per repo, a checkout per head
+    store/       the ledger: the jobs in hand, and what the gateway counts
     runs         the `Runs` port on the ledger, for the gateway
-    roles        the five roles' lifecycle in the process
+    roles        the four roles' lifecycle in the process
     app, cli, config   the process: listeners, wiring of gateway and model provider
 
-Inside the control plane, `core` and `store` import only `doppel_shared`; the rest may import any
-of them, plus `doppel_gateway` and `doppel_model_provider`, which it runs in-process.
+Inside the control plane, `store` imports only `doppel_shared`; the rest may import any of it, plus `doppel_gateway`
+and `doppel_model_provider`, which it runs in-process.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

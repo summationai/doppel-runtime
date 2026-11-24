@@ -214,6 +214,15 @@
           "description": "blocker verify-and-re-rate gate ran"
         }
       }
+    },
+    "fixed": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 60
+      },
+      "maxItems": 100,
+      "description": "keys of this doppel's earlier findings on the PR (listed in its instructions) that this commit fixes; Doppelwerk resolves their threads"
     }
   }
 }

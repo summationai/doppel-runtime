@@ -185,5 +185,20 @@ ALTER TABLE slots ADD COLUMN result TEXT;  -- the result JSON the BFF hasn't acc
 CREATE UNIQUE INDEX slots_bff_job ON slots (bff_job) WHERE bff_job IS NOT NULL;
 """
 
-MIGRATIONS = {1: V1, 2: V2, 3: V3, 4: V4, 5: V5, 6: V6}
+# BFF checkpoint 7: one path. Doppelwerk does intake, the merger, commands and posting; a runner keeps only the jobs it
+# runs (prs, slots) and the usage resets the gateway records.
+V7 = """
+DROP TABLE pr_reviewers;
+DROP TABLE merges;
+DROP TABLE ci_status;
+DROP TABLE command_responses;
+DROP TABLE commands;
+DROP TABLE finding_anchors;
+DROP TABLE findings;
+DROP TABLE posts;
+DROP TABLE dispositions;
+DROP TABLE intake_cursors;
+"""
+
+MIGRATIONS = {1: V1, 2: V2, 3: V3, 4: V4, 5: V5, 6: V6, 7: V7}
 SCHEMA_VERSION = max(MIGRATIONS)

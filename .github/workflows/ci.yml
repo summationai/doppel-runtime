@@ -45,4 +45,4 @@ jobs:
         env:
           DOPPEL_DOCKER_TESTS: "1"
           DOPPEL_TEST_SANDBOX_RUNTIME: runsc
-        run: uv run pytest -q tests/integration/test_runtime_docker.py::test_linux_runner_pairs_and_returns_a_bff_verdict
+        run: uv run pytest -q tests/integration/test_runtime_docker.py

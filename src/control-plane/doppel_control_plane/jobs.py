@@ -109,6 +109,7 @@ class JobRunner:
             self.pods[pr] = pod
             self.sandbox.start_reviewer(pod, ReviewJob(
                 slot_id, doppel["handle"], head, capability, pr=pr, instructions=job.get("instructions") or "",
+                focus=str(job.get("focus") or "")[:500],
                 base_ref=job.get("base_branch") or None, files=dict(doppel.get("files") or {}),
             ))  # fmt: skip
         except Exception as e:

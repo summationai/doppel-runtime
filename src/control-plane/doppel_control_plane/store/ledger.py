@@ -139,13 +139,6 @@ class Ledger:
         r = self._db.execute("SELECT * FROM slots WHERE id=?", (slot_id,)).fetchone()
         return Slot(r["id"], r["pr_id"], r["head_sha"], r["reviewer"], r["reason"], r["command_id"], r["state"])
 
-    def mark_running(self, slot_id: int) -> None:
-        with self.tx() as db:
-            db.execute(
-                "UPDATE slots SET state='running', started_at=?, attempts=attempts+1 WHERE id=? AND state='queued'",
-                (now(), slot_id),
-            )
-
     def record_usage_reset(self, payer: str, reset_at: datetime) -> None:
         """A payer hit their usage window: their slots wait until `reset_at` (DSV-12)."""
         self.execute(
@@ -157,11 +150,3 @@ class Ledger:
     def add_tokens(self, slot_id: int, tokens: int) -> None:
         if tokens:
             self.execute("UPDATE slots SET tokens_used = tokens_used + ? WHERE id=?", (tokens, slot_id))
-
-    def requeue_running(self) -> int:
-        """At startup: slots left `running` by a crash go back to `queued`. Returns how many."""
-        with self.tx() as db:
-            return db.execute(
-                "UPDATE slots SET state='queued', started_at=NULL, capability_hash=NULL "
-                "WHERE state='running' AND bff_job IS NULL"  # a BFF job's slot is the job runner's (jobs.py)
-            ).rowcount
