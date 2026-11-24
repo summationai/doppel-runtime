@@ -1,6 +1,6 @@
 # The split: Doppelwerk's BFF orchestrates, the runtime runs reviews
 
-Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoints 0 to 4 are live in the BFF (v63, v64, v66, v67, v69); see section 5.
+Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoints 0 to 5 are live in the BFF (v63, v64, v66, v67, v69, v70); see section 5.
 
 ## Decided
 
@@ -243,9 +243,24 @@ Eight checkpoints. Each one is built in the clone on its own branch, then shippe
 | 2 | Macs and seats | **BFF:** `runtimes` and `runtime_seats` tables, the "Add a Mac" pair code, seat codes, and the check-in POST. The Mac sends its roster; the answer says which seats to remove, whether to pause, the caps, and whether the runtime is revoked (§4b). **Runtime:** `doppel-runtime pair`, `seat add` (Codex device sign-in), and the check-in loop as a daemon. | A Mac paired to the local BFF shows its seats, and revoking it from the BFF stops it. | **Live, v66** (2026-11-24); runtime side in its own PR |
 | 3 | Intake and slots | The webhook makes one slot per (PR, head, doppel) (D2); force pushes are reviewed too. App doppels follow the workspace's event and personal doppels run when their person is requested (D4). Each slot gets its payer (D3). A slot not claimed within 2 h becomes `expired`. | A PR webhook makes the right slots, and stale ones expire. | **Live, v67** (2026-11-24) |
 | 4 | Jobs to the Mac | The check-in answer carries jobs, assigned only where the payer has a ready seat, within the payer and host caps. A job carries a one-repo read token and a snapshot of the doppel's rules. The Mac runs it in the sandbox and reports the result. | A Mac reviews a PR on a sandbox repo end to end. | **Live, v69** (2026-11-24); runtime side in its own PR |
-| 5 | Posting and the merger | The BFF posts each doppel's review as a COMMENT as Doppelcloud (D8), and the merger decides and approves (D7), with its status. When a slot expires, the merger stops waiting for a personal doppel, and an app doppel's PR stays unapproved with the reason. The merger's locked decisions and tests are ported. | A PR gets its doppels' comments and the merger's decision. | Next |
-| 6 | Commands and dispositions | `@doppelwerk review` and the other commands, dispositions on findings, and the reconcile poll (D9–D11). | — | Waits on RC's answer to #4: (a), (b) or (c) |
+| 5 | Posting and the merger | The BFF posts each doppel's review as a COMMENT as Doppelcloud (D8), and the merger decides and approves (D7), with its status. When a slot expires, the merger stops waiting for a personal doppel, and an app doppel's PR stays unapproved with the reason. The merger's locked decisions and tests are ported. | A PR gets its doppels' comments and the merger's decision. | **Live, v70** (2026-11-24) |
+| 6 | Commands and dispositions | `@doppelwerk review` and the other commands, dispositions on findings, and the reconcile poll (D9–D11). | — | Next; dispositions wait on RC's answer to #4: (a), (b) or (c) |
 | 7 | Cutover | The runtime's own intake, scheduler, merger and GitHub posting are deleted, and its ledger shrinks to the local tables. The Mac mini moves over, and the Codex crews can resume. | — | |
+
+Checkpoint 5 in detail (migration `20261124200000_posting_and_merger`; BFF `server/reviews/merger.ts`, `publish.ts`, `server/github/reviews.ts`):
+
+- **Posting (D8).** A finished slot queues `review_publish`, which runs at once (JOB-5) with the worker as backstop. It posts one COMMENT review by Doppelcloud on the head it reviewed, never on a moved head. It honours the workspace's comment header, summary toggle, findings toggle and minimum severity. A personal doppel's review is labelled "(<person>'s doppel)". GitHub's 422 for a line outside the diff moves the findings into the body. The token is one repository's, with `pull_requests:write` and `checks:read`. Reviews post only where an owner turned publishing on (the repository, or one PR); otherwise `not_posted` says why. When this shipped, no repository had it on.
+- **The merger (D7)**, ported from `core/merger.py` with its locked decisions:
+  - no app doppel, no approval;
+  - every app doppel is required, and a requested person's doppel for 2 hours from its first slot on the head, or until that slot expires or fails;
+  - a stood-down app doppel blocks, and so does red CI;
+  - any P0/P1 the diff introduced blocks, from any doppel, including removed ones;
+  - it posts APPROVE, or a COMMENT when blocked (never REQUEST_CHANGES), only when its decision changes;
+  - it dismisses an approval on a push, red CI or a late P1, and keeps one status comment (a deleted one is posted again).
+- **Quiet until it has something to say.** The merger reads CI only once the reviews are in, and mints a token only when it calls GitHub. Its status comment appears only after a doppel's review, an approval or a block, so PRs no Mac reviewed get nothing.
+- **When it runs:** after each posted or unposted verdict, after PR events, after a slot finally fails or expires, on `check_suite` completed, and every 10 minutes for PRs it is waiting on (the 2-hour clock, CI). An advisory lock per PR and per slot means nothing is posted twice.
+- **Shown** on the PR's page: the merger's decision and reason, and each review's GitHub link or why it wasn't posted.
+- **Not yet:** dispositions (a person closing a finding) and commands (checkpoint 6); Doppelwerk's other approval guards (RC's review #2).
 
 Checkpoint 4 in detail (migration `20261124180000_slot_results`; BFF `server/slots/jobs.ts`; runtime `jobs.py`):
 
