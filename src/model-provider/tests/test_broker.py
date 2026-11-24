@@ -153,6 +153,17 @@ async def test_disconnect_removes_the_home(world):
     assert homes.bundle(STEVEN) is None
 
 
+async def test_disconnect_cancels_an_open_sign_in(world):
+    homes, account, broker = world
+    await broker.login(TROY)
+    assert broker.status(TROY)["state"] == "signing_in"
+    await broker.disconnect(TROY)
+    account.approve.set()  # approved after the seat was removed: it must not sign them back in
+    await asyncio.sleep(0.05)
+    assert homes.bundle(TROY) is None
+    assert broker.status(TROY)["state"] == "signed_out"
+
+
 @pytest.mark.parametrize("payer", ["u-steven", "../etc/x", "summation/..", "summation/.hidden", "a/b/c", ""])
 async def test_bad_payer_ids_are_refused(world, payer):
     _, _, broker = world

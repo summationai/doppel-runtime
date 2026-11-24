@@ -15,6 +15,7 @@ Sign-ins live in each payer's Codex home on this disk (codex_homes). Tokens are 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import shutil
 import time
@@ -150,6 +151,11 @@ class Broker:
 
     async def disconnect(self, payer: str) -> None:
         home = self.homes.home(payer)
+        open_login = self._logins.pop(payer, None)
+        if open_login and not open_login[1].done():  # a sign-in approved later must not land in a removed seat
+            open_login[1].cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await open_login[1]
         if payer not in self.homes.overrides and home.is_dir():
             shutil.rmtree(home)
         self._errors.pop(payer, None)

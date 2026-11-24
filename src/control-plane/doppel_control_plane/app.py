@@ -3,9 +3,10 @@
 Listeners are separate sockets so the network can keep pods away from all but the model route
 (DSV-8): pods reach `model`; `internal` (posting, broker, API) and `health` stay off the pod network.
 
-The broker and gateway always run. Intake, the scheduler and the sandbox run once GitHub is
-configured (`github.mode = "app"`: the App's REST ports), or when a caller hands in the GitHub ports
-(tests, the local demo). Webhooks are taken on the internal listener when a secret is configured.
+The broker, the gateway and the BFF check-in always run (the check-in waits quietly until this Mac
+is paired). Intake, the scheduler and the sandbox run once GitHub is configured (`github.mode =
+"app"`: the App's REST ports), or when a caller hands in the GitHub ports (tests, the local demo).
+Webhooks are taken on the internal listener when a secret is configured.
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ from doppel_model_provider import api as broker_api
 from doppel_shared.ports import GitHub, GitHubReader, Sandbox
 
 from doppel_control_plane import __version__
+from doppel_control_plane.bff import BffLink, BffState
+from doppel_control_plane.bff import add_routes as bff_routes
 from doppel_control_plane.config import LISTENERS, Config, read_secret
 from doppel_control_plane.core.matching import Limits
 from doppel_control_plane.directory import ConfigDirectory
@@ -58,6 +61,7 @@ class Runtime:
         self.bound: dict[str, tuple[str, int]] = {}  # listener -> (host, port) actually bound
         self.gateway: ModelRoute | None = None
         self.broker: Broker | None = None
+        self.bff: BffLink | None = None
         self.github, self.reader, self.sandbox = github, reader, sandbox
         self.scheduler: Scheduler | None = None
         self.poller: Poller | None = None
@@ -85,6 +89,8 @@ class Runtime:
             self.gateway.add_routes(app)
         if listener == "internal" and self.broker is not None:  # sign-ins: never on the model listener
             broker_api.add_routes(app, self.broker)
+        if listener == "internal" and self.bff is not None:  # seats, added from this Mac's CLI
+            bff_routes(app, self.bff)
         if listener == "internal":  # GitHub's events, forwarded by the BFF; 404 until webhooks are configured
 
             async def webhook(request: web.Request) -> web.StreamResponse:
@@ -107,13 +113,21 @@ class Runtime:
         self.broker = Broker(homes, CodexSdkAccount())
         self._tasks.append(asyncio.create_task(self.broker.keep_fresh()))
         self.gateway = ModelRoute(LedgerRuns(self.ledger), self.broker)
+        self.bff = BffLink(BffState(self.config.bff_dir), self.broker, host_cap=self.config.scheduler.host_cap,
+                           version=__version__)  # fmt: skip
         self.roles = {name: Role(name) for name in ROLE_NAMES}
+        self.roles["bff"] = Role("bff", self._check_in, self.config.bff.check_in.total_seconds())
         await self._listen()  # first: the sandbox needs the model listener's port
         if self.github is not None or self.config.github.mode != "off":
             self._wire_reviews()
         for role in self.roles.values():
-            if role.name in ("broker", "gateway") or self.scheduler is not None:
+            if role.name in ("broker", "gateway", "bff") or self.scheduler is not None:
                 await role.start()
+
+    async def _check_in(self) -> None:
+        await self.bff.check_in(self.clock().isoformat())
+        if self.bff.every:
+            self.roles["bff"].every = self.bff.every
 
     def _github_app(self) -> None:
         """The App's REST ports: one client, its installation tokens shared by reads, posts and fetches."""

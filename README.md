@@ -54,6 +54,19 @@ uv run doppel-runtime serve   # listeners on 127.0.0.1:8700 (model), 8701 (inter
 
 Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [src/control-plane/doppel_control_plane/config.py](src/control-plane/doppel_control_plane/config.py). It holds the tenants, repos and reviewers until the BFF's records arrive. With `github.mode = "off"` (the default), only the broker and gateway run; intake, the scheduler and the sandbox start once GitHub is configured (`mode = "app"`: see [docs/github-app.md](docs/github-app.md)). Progress is tracked in [docs/specs/checkpoints.md](docs/specs/checkpoints.md).
 
+## Onboarding a Mac
+
+Doppelwerk's BFF orchestrates; this Mac runs reviews and keeps every sign-in ([docs/specs/bff-split.md](docs/specs/bff-split.md) §4b). The runtime only calls out to the BFF.
+
+```sh
+doppel-runtime pair dwp_… --bff https://doppelwerk.ac0.app   # code: Doppelwerk → Settings → Macs → Add a Mac
+doppel-runtime serve                                         # checks in every 30 s
+doppel-runtime seat add dws_…    # a member's code (Settings → Macs → Add my seat); they approve Codex's sign-in in their browser
+doppel-runtime status            # which workspace, and each seat's state
+```
+
+The pairing lives in `<data_dir>/bff/` (owner-only): the Mac's own credential, which Mac it is, and its seats. Each seat's Codex sign-in lives in the broker's home for payer `<workspace id>/<member id>`. A seat removed in Doppelwerk is signed out at the next check-in; a removed Mac signs every seat out and forgets its credential.
+
 ## Docs
 
 - [docs/specs/built/](docs/specs/built/): what the runtime does today, one file per feature, with its locked decisions and the tests that hold them.

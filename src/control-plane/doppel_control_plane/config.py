@@ -39,6 +39,10 @@ No secret belongs in the file. Model sign-ins live in each payer's Codex home un
     payer_cap = 2
     host_cap = 10
 
+    [bff]                                 # Doppelwerk: this Mac pairs with it (`doppel-runtime pair`)
+    url = "https://doppelwerk.ac0.app"    # the default for `pair --bff`; once paired, the pairing's own address counts
+    check_in_seconds = 30                 # until the BFF says otherwise
+
     [sandbox]
     image = "doppel-sandbox:dev"
     runtime = "runsc"                     # gVisor on summini; leave out for Docker's default
@@ -129,6 +133,12 @@ class SchedulerConfig:
 
 
 @dataclass(frozen=True)
+class BffConfig:
+    url: str | None = None
+    check_in: timedelta = timedelta(seconds=30)
+
+
+@dataclass(frozen=True)
 class SandboxConfig:
     image: str = "doppel-sandbox:dev"
     runtime: str | None = None
@@ -146,6 +156,7 @@ class Config:
     intake: IntakeConfig = IntakeConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
     sandbox: SandboxConfig = SandboxConfig()
+    bff: BffConfig = BffConfig()
     tenants: tuple[Tenant, ...] = ()
 
     @property
@@ -155,6 +166,10 @@ class Config:
     @property
     def tenants_dir(self) -> Path:
         return self.data_dir / "tenants"
+
+    @property
+    def bff_dir(self) -> Path:
+        return self.data_dir / "bff"
 
 
 def load(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
@@ -174,7 +189,7 @@ def load(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
             host=host, port=int(port if port is not None else section.get("port", DEFAULT_PORTS[name]))
         )
     homes = {payer: Path(p).expanduser() for payer, p in raw.get("broker", {}).get("homes", {}).items()}
-    gh, it, sc, sb = (raw.get(k, {}) for k in ("github", "intake", "scheduler", "sandbox"))
+    gh, it, sc, sb, bf = (raw.get(k, {}) for k in ("github", "intake", "scheduler", "sandbox", "bff"))
     mode = env.get("DOPPEL_GITHUB_MODE") or gh.get("mode", "off")
     if mode not in ("off", "app"):
         raise ValueError(f"github.mode must be off or app, not {mode!r}")
@@ -216,6 +231,10 @@ def load(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
             sb.get("memory", SandboxConfig.memory),
             str(sb.get("cpus", SandboxConfig.cpus)),
             sb.get("gateway_target") or None,
+        ),
+        bff=BffConfig(
+            env.get("DOPPEL_BFF_URL") or bf.get("url") or None,
+            timedelta(seconds=bf.get("check_in_seconds", 30)),
         ),
         tenants=tenants,
     )
