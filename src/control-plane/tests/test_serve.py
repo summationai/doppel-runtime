@@ -49,10 +49,10 @@ def test_serve_answers_health_on_every_listener(tmp_path):
         for name, port in ports.items():
             body = health(port)
             assert body["ok"] and body["listener"] == name
-            assert set(body["roles"]) == {"intake", "scheduler", "broker", "gateway", "sandbox"}
-            # GitHub isn't configured: the broker and gateway run; intake, scheduler and sandbox wait for it.
+            assert set(body["roles"]) == {"intake", "scheduler", "broker", "gateway", "sandbox", "bff"}
+            # GitHub isn't configured: the broker, gateway and BFF check-in run; intake, scheduler and sandbox wait.
             assert body["roles"] == {"intake": False, "scheduler": False, "broker": True, "gateway": True,
-                                     "sandbox": False}  # fmt: skip
+                                     "sandbox": False, "bff": True}  # fmt: skip
     finally:
         proc.send_signal(signal.SIGTERM)
         assert proc.wait(10) == 0
