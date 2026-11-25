@@ -87,6 +87,7 @@ async def test_a_runner_in_a_container_pairs_and_reviews_from_its_volume(tmp_pat
     fixture = f"{name}-doppelwerk"
     owner = hashlib.sha256(f"jobs:{DATA}@{name}".encode()).hexdigest()[:12]
     (tmp_path / "runner.toml").write_text('[github]\nrepo_url = "/repos/{repo}"\n')
+    (tmp_path / "gitconfig").write_text("[safe]\n\tdirectory = *\n")
     config = ["--config", "/etc/doppel/runner.toml"]
 
     def seen() -> dict:
@@ -109,8 +110,9 @@ async def test_a_runner_in_a_container_pairs_and_reviews_from_its_volume(tmp_pat
             "-e", f"DOPPEL_SANDBOX_DATA_VOLUME={name}", "-e", f"DOPPEL_SANDBOX_NETWORK={name}",
             "-e", f"DOPPEL_SANDBOX_GATEWAY_TARGET={name}:8700", "-e", f"DOPPEL_SANDBOX_IMAGE={SANDBOX}",
             "-e", f"DOPPEL_CHATGPT_BASE=http://{fixture}:8080/v1",
-            # The fixture repos belong to this machine's user; git refuses another owner's repo without this.
-            "-e", "GIT_CONFIG_COUNT=1", "-e", "GIT_CONFIG_KEY_0=safe.directory", "-e", "GIT_CONFIG_VALUE_0=*",
+            # The fixture repos belong to this machine's user, and git refuses another owner's repo unless a global
+            # config allows it (it ignores safe.directory from the environment or the command line).
+            "-v", f"{tmp_path / 'gitconfig'}:/etc/doppel/gitconfig:ro", "-e", "GIT_CONFIG_GLOBAL=/etc/doppel/gitconfig",
             RUNNER, "doppel-runtime", "serve", *config,
         )  # fmt: skip
         await until(lambda: "ok" in docker("exec", name, "python", "-c", HEALTHY, check=False), 60)
