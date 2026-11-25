@@ -133,8 +133,16 @@ class NotAVerdict(ValueError):
     """The model answered, but never with a verdict that fits the schema."""
 
 
+def codex_api():
+    """The Codex SDK's parts a review uses, imported only in the pod (tests import them through here too)."""
+    from openai_codex import ApprovalMode, AsyncCodex, Sandbox
+    from openai_codex.types import ReasoningEffort
+
+    return ApprovalMode, AsyncCodex, ReasoningEffort, Sandbox
+
+
 async def _review(job: Job, folder: Path, capability: str, model: str | None, effort: str | None) -> dict:
-    from openai_codex import ApprovalMode, AsyncCodex, ReasoningEffort, Sandbox
+    ApprovalMode, AsyncCodex, ReasoningEffort, Sandbox = codex_api()
 
     home = Path(tempfile.mkdtemp(prefix="codex-"))  # this run's scratch: mode 0700, wiped below
     try:
