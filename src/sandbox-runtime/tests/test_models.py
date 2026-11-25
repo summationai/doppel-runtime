@@ -54,3 +54,12 @@ def test_the_catalog_is_the_pinned_codexs_own():
         assert re.search(r'"visibility"\s*:\s*"list"', entry), f"{slug} isn't one Codex lists"
         listed = tuple(dict.fromkeys(re.findall(r'"effort"\s*:\s*"([a-z]+)"', entry)))
         assert listed == efforts, f"{slug} takes {listed} in Codex {CODEX_VERSION}"
+
+
+def test_every_effort_a_runner_passes_is_one_the_sdk_takes():
+    from doppel_sandbox.review import codex_api
+
+    _, _, reasoning_effort, _ = codex_api()  # the same imports a review makes in the pod
+    for efforts in CODEX_MODELS.values():
+        for effort in efforts:
+            assert reasoning_effort(effort).value == effort
