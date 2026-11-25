@@ -8,7 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 from doppel_control_plane import config
-from doppel_control_plane.bff import PROTOCOL, BffError, BffLink, BffState, add_routes, pair
+from doppel_control_plane.bff import PROTOCOL, BffError, BffLink, BffState, add_routes, newer, pair
 from doppel_model_provider.broker import Broker
 from doppel_model_provider.codex_account import DeviceLogin
 from doppel_model_provider.codex_homes import CodexHomes
@@ -45,6 +45,7 @@ class FakeBff:
         self.paused = False
         self.protocol: dict | None = {"current": PROTOCOL, "minimum": 0}  # None: a BFF from before the handshake
         self.pairs: list[dict] = []
+        self.release: dict | None = None  # protocol 2: the latest runtime release
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -105,6 +106,7 @@ class FakeBff:
                 "remove_seats": [sid for sid in reported if sid not in self.seats],
                 "jobs": [], "check_in_after_seconds": 30,
                 **({"protocol": self.protocol} if self.protocol else {}),
+                "release": self.release,
             })  # fmt: skip
 
         app.router.add_post("/api/runtime/pair", do_pair)
@@ -312,3 +314,37 @@ async def test_pairing_a_runtime_too_old_for_the_bff_says_to_update(tmp_path, wo
         await pair(fresh, url, "dwp_good")
     assert e.value.status == 426 and e.value.protocol == bff.protocol and "Update doppel-runtime" in str(e.value)
     assert fresh.identity() is None
+
+
+async def test_protocol_2_reports_isolation_and_notices_a_newer_release(world):
+    bff, url, state, link, _, _ = world
+    await pair(state, url, "dwp_good")
+    await link.check_in()
+    assert "isolation" not in bff.check_ins[-1], "nothing to say until the runtime has looked"
+    link.isolation = "gvisor"
+    link.version = "0.2.0"
+    bff.release = {"latest": "0.3.0", "notes": "https://github.com/summationai/doppel-runtime/releases/tag/v0.3.0"}
+    await link.check_in()
+    assert bff.check_ins[-1]["isolation"] == "gvisor" and bff.check_ins[-1]["protocol"] == 2
+    view = link.view()
+    assert (view["behind"], view["release"]["latest"], view["version"], view["isolation"]) == (
+        True,
+        "0.3.0",
+        "0.2.0",
+        "gvisor",
+    )
+    link.version = "0.3.0"
+    await link.check_in()
+    assert link.behind is False
+    bff.release = None  # no release yet, or GitHub couldn't be reached
+    await link.check_in()
+    assert (link.release, link.behind) == (None, False)
+    link.isolation = "firecracker"  # never sent unless it's one the BFF knows
+    await link.check_in()
+    assert "isolation" not in bff.check_ins[-1]
+
+
+def test_newer_compares_x_y_z_and_never_flags_what_it_cant_compare():
+    assert newer("0.10.0", "0.9.0") and newer("1.0.0", "v0.9.9")
+    assert not newer("1.2.3", "1.2.3") and not newer("1.2.9", "1.3.0")
+    assert not newer("1.0.0", "test") and not newer("0.1.0-dev", "0.0.1")
