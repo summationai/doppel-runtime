@@ -56,9 +56,22 @@ class Seat:
 # check-in; the BFF answers with the range it accepts ({"current", "minimum"}). Below its minimum the BFF refuses
 # with 426 and this runtime takes no work until it is updated; below its current, it works and says an update is
 # available. Bump it with any change to what this side sends or reads, with the BFF's support for it.
-PROTOCOL = 1
+#   1  the handshake itself
+#   2  check-ins say how pods are isolated (`isolation`); answers name the latest release (docs/specs/packaging.md)
+PROTOCOL = 2
 UPDATE_REQUIRED = 426
 OUTDATED_EVERY = 300.0  # seconds between check-ins while the BFF refuses this version: it may be updated meanwhile
+
+
+def newer(a: str, b: str) -> bool:
+    """Whether version `a` is newer than `b`, both X.Y.Z. Anything else (a dev build) is never older: nothing to say."""
+
+    def parse(v: str) -> tuple[int, ...] | None:
+        parts = v.removeprefix("v").split(".")
+        return tuple(int(p) for p in parts) if len(parts) == 3 and all(p.isdigit() for p in parts) else None
+
+    pa, pb = parse(a), parse(b)
+    return pa is not None and pb is not None and pa > pb
 
 
 class BffError(Exception):
@@ -209,6 +222,8 @@ class BffLink:
         self.update: str = "none"  # "available": the BFF speaks a newer protocol; "required": it refuses this one
         self.bff_protocol: dict | None = None
         self.isolation: str | None = None  # how this runner's pods are isolated: "gvisor" or "standard"
+        self.release: dict | None = None  # the latest release Doppelwerk knows of: {"latest", "notes"}
+        self.behind = False  # this runner's version is older than it
         self._said_unpaired = False
         self.jobs = jobs  # the JobRunner (jobs.py); None: this runtime takes no jobs
         if jobs is not None:
@@ -252,6 +267,7 @@ class BffLink:
             body = {
                 "version": self.version,
                 "protocol": PROTOCOL,
+                **({"isolation": self.isolation} if self.isolation in ("gvisor", "standard") else {}),
                 "capacity": max(0, self.host_cap - len(running)),
                 "running": running,
                 "seats": [
@@ -283,6 +299,7 @@ class BffLink:
             self.last_error = None
             self.last_check_in = now or None
             self._note_protocol(answer.get("protocol"))
+            self._note_release(answer.get("release"))
             if answer.get("revoked"):
                 if self.jobs is not None:
                     self.jobs.stop(running)
@@ -316,6 +333,16 @@ class BffLink:
             log.warning("bff: Doppelwerk speaks protocol %s and this runtime %s: update doppel-runtime when you can",
                         current, PROTOCOL)  # fmt: skip
         self.update = update
+
+    def _note_release(self, release: object) -> None:
+        """The latest runtime release, as Doppelwerk knows it (protocol 2); None until there is one."""
+        latest = release.get("latest") if isinstance(release, dict) else None
+        self.release = release if isinstance(latest, str) else None
+        behind = newer(latest, self.version) if isinstance(latest, str) else False
+        if behind and not self.behind:
+            log.warning("bff: doppel-runtime %s is out (this runner has %s): run `doppel-runtime update`",
+                        latest, self.version)  # fmt: skip
+        self.behind = behind
 
     async def _sign_out(self, seat: Seat) -> None:
         try:
@@ -356,6 +383,9 @@ class BffLink:
             "bff_protocol": self.bff_protocol,
             "update": self.update,
             "isolation": self.isolation,
+            "version": self.version,
+            "release": self.release,
+            "behind": self.behind,
             "seats": [{**asdict(s), "state": self._seat_state(s.payer)} for s in self.state.seats().values()]
             if identity
             else [],
