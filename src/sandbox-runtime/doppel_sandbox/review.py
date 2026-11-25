@@ -64,7 +64,8 @@ class Job:
     head_sha: str
     workdir: str  # /work/<head_sha>
     gateway_url: str  # http://gateway:8700
-    model: str | None = None
+    model: str | None = None  # None: Codex's default; the runtime passes only one this Codex knows
+    effort: str | None = None  # None: the model's default
     instructions: str = ""  # the reviewer's rubric, read from the PR's base (DSV-9)
     focus: str = ""  # a command's description
 
@@ -114,7 +115,26 @@ def codex_config(job: Job, home: Path, capability: str):
 
 
 async def review(job: Job, folder: Path, capability: str) -> dict:
-    from openai_codex import ApprovalMode, AsyncCodex, Sandbox
+    """The verdict, on the doppel's model and effort; when Codex refuses those (the payer's plan lacks the model,
+    say), once more on Codex's defaults. An answer that never fits the schema isn't retried that way."""
+    try:
+        return await _review(job, folder, capability, job.model, job.effort)
+    except NotAVerdict:
+        raise
+    except Exception as e:
+        if not (job.model or job.effort):
+            raise
+        print(f"review: {job.model or 'the default model'} at {job.effort or 'its default effort'} failed "
+              f"({type(e).__name__}): reviewing on Codex's defaults", file=sys.stderr)  # fmt: skip
+        return await _review(job, folder, capability, None, None)
+
+
+class NotAVerdict(ValueError):
+    """The model answered, but never with a verdict that fits the schema."""
+
+
+async def _review(job: Job, folder: Path, capability: str, model: str | None, effort: str | None) -> dict:
+    from openai_codex import ApprovalMode, AsyncCodex, ReasoningEffort, Sandbox
 
     home = Path(tempfile.mkdtemp(prefix="codex-"))  # this run's scratch: mode 0700, wiped below
     try:
@@ -124,19 +144,20 @@ async def review(job: Job, folder: Path, capability: str) -> dict:
                                diff=folder / "diff.patch", instructions=instructions, focus=focus)  # fmt: skip
         async with AsyncCodex(codex_config(job, home, capability)) as codex:
             thread = await codex.thread_start(
-                model=job.model, cwd=job.workdir, ephemeral=True,
+                model=model, cwd=job.workdir, ephemeral=True,
                 sandbox=Sandbox.full_access, approval_mode=ApprovalMode.deny_all,  # the pod is the boundary
             )  # fmt: skip
-            engine = job.model or "codex"
-            result = await thread.run(prompt)
+            engine = model or "codex"
+            level = ReasoningEffort(effort) if effort else None
+            result = await thread.run(prompt, effort=level)
             verdict = stamp(extract_json(result.final_response), job, engine)
             wrong = problems(verdict) if verdict is not None else ["the answer held no JSON object"]
             if wrong:
-                result = await thread.run(RETRY.format(problems="; ".join(wrong[:8])))
+                result = await thread.run(RETRY.format(problems="; ".join(wrong[:8])), effort=level)
                 verdict = stamp(extract_json(result.final_response), job, engine)
                 wrong = problems(verdict) if verdict is not None else ["the answer held no JSON object"]
             if wrong:
-                raise ValueError("no valid verdict after one correction: " + "; ".join(wrong[:8]))
+                raise NotAVerdict("no valid verdict after one correction: " + "; ".join(wrong[:8]))
             return verdict
     finally:
         shutil.rmtree(home, ignore_errors=True)

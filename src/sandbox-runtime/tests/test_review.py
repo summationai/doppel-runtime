@@ -36,3 +36,42 @@ def test_a_verdict_may_say_which_earlier_findings_this_commit_fixes():
                "fixed": ["3a2750e8-F1"]}  # fmt: skip
     assert problems(verdict) == []
     assert problems({**verdict, "fixed": [1]}) != []
+
+
+def test_a_job_file_carries_the_model_and_effort(tmp_path):
+    job = Job(**{**JOB.__dict__, "model": "gpt-6-sol", "effort": "high"})
+    (tmp_path / "job.json").write_text(json.dumps(job.__dict__))
+    assert Job.load(tmp_path) == job
+
+
+async def test_codex_refusing_the_model_reviews_again_on_its_defaults(monkeypatch, tmp_path):
+    from doppel_sandbox import review as module
+
+    tried = []
+
+    async def fake(job, folder, capability, model, effort):
+        tried.append((model, effort))
+        if model:
+            raise RuntimeError("model not available on this plan")
+        return {"verdict": "clean"}
+
+    monkeypatch.setattr(module, "_review", fake)
+    job = Job(**{**JOB.__dict__, "model": "gpt-6-sol", "effort": "high"})
+    assert await module.review(job, tmp_path, "cap") == {"verdict": "clean"}
+    assert tried == [("gpt-6-sol", "high"), (None, None)]
+
+
+async def test_an_answer_that_never_fits_isnt_retried_on_the_defaults(monkeypatch, tmp_path):
+    import pytest
+    from doppel_sandbox import review as module
+
+    tried = []
+
+    async def fake(job, folder, capability, model, effort):
+        tried.append(model)
+        raise module.NotAVerdict("no valid verdict")
+
+    monkeypatch.setattr(module, "_review", fake)
+    with pytest.raises(module.NotAVerdict):
+        await module.review(Job(**{**JOB.__dict__, "model": "gpt-6-sol"}), tmp_path, "cap")
+    assert tried == ["gpt-6-sol"]

@@ -285,7 +285,7 @@ class DockerPods:
         (folder / "job.json").write_text(json.dumps({
             "reviewer": job.reviewer, "pr": pr.number, "head_sha": job.head_sha,
             "workdir": f"/work/{job.head_sha}", "gateway_url": f"http://gateway:{EGRESS_PORT}",
-            "model": job.model, "instructions": job.instructions, "focus": job.focus,
+            "model": job.model, "effort": job.effort, "instructions": job.instructions, "focus": job.focus,
         }))  # fmt: skip
         for path in (folder, folder / "diff.patch", folder / "job.json"):
             path.chmod(0o755 if path.is_dir() else 0o644)

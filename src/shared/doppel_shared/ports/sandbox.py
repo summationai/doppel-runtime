@@ -15,7 +15,8 @@ class ReviewJob:
     focus: str = ""  # a command's description, given to the reviewer as what to look at
     pr: PRRef | None = None  # whose code: the sandbox checks out `head_sha` of this PR's repo
     instructions: str = ""  # the reviewer's rubric, from the PR's base (DSV-9)
-    model: str | None = None  # None: the provider's default
+    model: str | None = None  # None: Codex's default (doppel_shared.models.choose decides)
+    effort: str | None = None  # how hard the model reasons; None: the model's default
     base_ref: str | None = None  # the PR's base branch, for the diff; None: the repo's default branch
     files: dict[str, str] | None = None  # the doppel's own files (references and the like), put next to the diff
 

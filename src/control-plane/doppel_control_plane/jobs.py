@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from doppel_shared.capability import capability_hash, mint
+from doppel_shared.models import choose
 from doppel_shared.ports import ReviewJob, Sandbox
 from doppel_shared.types import PRRef
 
@@ -97,6 +98,10 @@ class JobRunner:
         capability = mint()
         pr_id = self.ledger.upsert_pr(tenant, repo, number, head)
         reason = "review_requested" if doppel.get("kind") == "personal" else "app"
+        config = doppel.get("config") if isinstance(doppel.get("config"), dict) else {}
+        model, effort, notes = choose(config.get("model"), config.get("effort"))
+        for note in notes:
+            log.warning("bff: job %s (%s): %s", jid, doppel["handle"], note)
         with self.ledger.tx() as db:
             cur = db.execute(
                 "INSERT INTO slots (pr_id, head_sha, reviewer, payer_user, reason, command_id, state, attempts, "
@@ -111,6 +116,7 @@ class JobRunner:
                 slot_id, doppel["handle"], head, capability, pr=pr, instructions=job.get("instructions") or "",
                 focus=str(job.get("focus") or "")[:500],
                 base_ref=job.get("base_branch") or None, files=dict(doppel.get("files") or {}),
+                model=model, effort=effort,
             ))  # fmt: skip
         except Exception as e:
             log.exception("bff: job %s couldn't start", jid)
