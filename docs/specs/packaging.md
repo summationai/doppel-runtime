@@ -1,7 +1,7 @@
 # Packaging: installing, pairing and updating a runner
 
-Status: decided 2026-11-24. Steps 1 and 2 are built (doppel-runtime #26, Doppelwerk v79); step 3, the host command,
-is built (see "Order of work"); steps 4 and 5 are not. Until the first release a runner is installed by hand: the mini's VM
+Status: decided 2026-11-24. Steps 1 and 2 are built (doppel-runtime #26, Doppelwerk v79); step 3, the host command, is
+built (#28); step 4's workflow is built and waits for the first tag; step 5 is not. Until the first release a runner is installed by hand: the mini's VM
 follows the Linux runner guide from #19 step by step, and an update means copying a commit in from a laptop.
 This spec replaces that with releases and one command, on a Mac or Linux, with Docker as the only thing to install first.
 
@@ -125,8 +125,16 @@ Pushing a tag `vX.Y.Z` runs one workflow:
    ```
 5. Update the formula in `summationai/homebrew-tap` to the new binaries and their sums.
 
-The runtime's version (`__version__`, shown on Runners) comes from the tag. A release that raises `PROTOCOL` says so in
-its notes.
+The runtime's version (`__version__`, shown on Runners) is the tag's: the workflow refuses a tag that doesn't match it.
+A release that raises `PROTOCOL` says so in its notes (they name the protocol).
+
+**To release** (`.github/workflows/release.yml`, `scripts/release/`):
+
+1. In a pull request, set `__version__` in `src/control-plane/doppel_control_plane/__init__.py` to the new X.Y.Z; merge.
+2. Tag that commit and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. The workflow runs everything CI runs, then publishes. The first time only: make both packages public on ghcr.io
+   (GitHub makes new packages private), and create `summationai/homebrew-tap` with a `HOMEBREW_TAP_TOKEN` secret here
+   that can push to it; without the secret the release still works through `install.sh` and only the formula waits.
 
 ## Moving the mini over
 
@@ -149,7 +157,11 @@ pairing and sign-ins:
    `tests/integration/test_host_command.py` pairs, gets a review done, updates, rolls a broken update back and
    uninstalls against real Docker. The runner gained what it needs: codes on stdin (`pair -`, `seat add -`),
    `status --json`, `drain [--off]` (check-ins offer no room) and `forget`. `import` (step 5) is not built.
-4. **The release workflow**, `install.sh` and the Homebrew tap; the first release, `v0.2.0`.
+4. **The release workflow**, `install.sh` and the Homebrew tap; the first release, `v0.2.0`. **Built:**
+   `.github/workflows/release.yml`; `scripts/release/install.sh` (tested against a release on disk, and by shellcheck);
+   `scripts/release/release.py` (the version check, release.json, the notes, the formula; `tests/test_release.py`).
+   The runner image takes its sandbox image as a build argument (`SANDBOX_IMAGE`), so a release's runner names its
+   sandbox by digest. Not yet: the tap repository, its token, and the first tag.
 5. **The mini moved over** with `import`; this spec's steps run by someone other than its author on a clean Mac and a
    clean Linux VM.
 

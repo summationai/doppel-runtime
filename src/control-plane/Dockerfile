@@ -26,6 +26,9 @@ COPY src ./src
 RUN UV_PYTHON_DOWNLOADS=never uv sync --locked --no-dev --python /usr/local/bin/python3 \
  && rm -rf /root/.cache
 
+# The review pod image this runner starts: a release builds the sandbox first and passes its digest here, so a runner
+# only ever starts the pod image of its own release.
+ARG SANDBOX_IMAGE=doppel-sandbox:dev
 # The packaging defaults; the host command sets nothing else. The model listener listens on the runner's network, where
 # only the pods' egress forwarder reaches it; the internal and health listeners stay on the container's loopback.
 ENV PATH=/opt/doppel-runtime/.venv/bin:$PATH \
@@ -36,7 +39,7 @@ ENV PATH=/opt/doppel-runtime/.venv/bin:$PATH \
     DOPPEL_SANDBOX_DATA_VOLUME=doppel-runtime-data \
     DOPPEL_SANDBOX_NETWORK=doppel-runtime \
     DOPPEL_SANDBOX_GATEWAY_TARGET=doppel-runtime:8700 \
-    DOPPEL_SANDBOX_IMAGE=doppel-sandbox:dev
+    DOPPEL_SANDBOX_IMAGE=${SANDBOX_IMAGE}
 VOLUME /var/lib/doppel-runtime
 LABEL dev.doppelwerk.runtime="1"
 CMD ["doppel-runtime", "serve"]

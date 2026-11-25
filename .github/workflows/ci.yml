@@ -3,6 +3,7 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_call: # the release workflow runs all of this first
 
 jobs:
   test:
@@ -31,6 +32,9 @@ jobs:
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test ./...
+      - name: install.sh passes shellcheck
+        working-directory: .
+        run: docker run --rm -v "$PWD/scripts/release:/mnt" koalaman/shellcheck:v0.10.0 /mnt/install.sh
       - name: Builds for every platform it ships on
         run: |
           for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
