@@ -1,8 +1,8 @@
 """The `doppel-runtime` command.
 
     serve [--config PATH]                    run the runtime process (the daemon)
-    pair CODE [--bff URL] [--replace]        pair this Mac with Doppelwerk, using a code from Settings → Macs
-    seat add CODE                            add a member's seat (their code from Settings → Macs), then sign them in
+    pair CODE [--bff URL] [--replace]        pair this Mac with Doppelwerk, using a code from Runners
+    seat add CODE                            add a member's seat (their code from Runners), then sign them in
     seat sign-in SEAT                        sign a seat's member in to Codex again
     status                                   which workspace this Mac serves, and each seat's state
 
@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("serve", help="run the runtime process", parents=[common])
     p = sub.add_parser("pair", help="pair this Mac with Doppelwerk", parents=[common])
-    p.add_argument("code", help="the one-time pair code (dwp_...) from Settings → Macs")
+    p.add_argument("code", help="the one-time pair code (dwp_...) from Runners")
     p.add_argument("--bff", help="Doppelwerk's address, e.g. https://doppelwerk.ac0.app")
     p.add_argument("--replace", action="store_true", help="pair again, replacing this Mac's current pairing")
     seat = sub.add_parser("seat", help="a member's seat on this Mac").add_subparsers(dest="seat", required=True)
@@ -67,7 +67,7 @@ def _pair(cfg: config.Config, code: str, url: str | None, replace: bool) -> int:
         print("Say where Doppelwerk is: --bff https://<its address>", file=sys.stderr)
         return 2
     if not code.startswith("dwp_"):
-        print("That isn't a pair code (dwp_...). Get one in Doppelwerk: Settings → Macs → Add a Mac.", file=sys.stderr)
+        print("That isn't a pair code (dwp_...). Get one in Doppelwerk: Runners → Add a runner.", file=sys.stderr)
         return 2
     try:
         identity = asyncio.run(pair(BffState(cfg.bff_dir), url, code, replace=replace, version=__version__))
@@ -81,7 +81,7 @@ def _pair(cfg: config.Config, code: str, url: str | None, replace: bool) -> int:
         print(f"Not paired: couldn't reach {url} ({type(e).__name__})", file=sys.stderr)
         return 1
     print(f"Paired: this Mac is {identity.name!r} in {identity.organization!r}.")
-    print("Start the runtime (doppel-runtime serve) and it checks in. Then each member adds a seat in Settings → Macs.")
+    print("Start the runtime (doppel-runtime serve) and it checks in. Then each member adds a seat in Runners.")
 
     return 0
 
@@ -153,16 +153,20 @@ def _status(cfg: config.Config) -> int:
               if identity else "Not paired, and the runtime isn't running.")  # fmt: skip
         return 1
     if not view.get("paired"):
-        print("Not paired. Get a code in Doppelwerk (Settings → Macs → Add a Mac), then: doppel-runtime pair <code>")
+        print("Not paired. Get a code in Doppelwerk (Runners → Add a runner), then: doppel-runtime pair <code>")
         return 0
     runtime = view["runtime"]
     print(f"{runtime['name']!r} in {runtime['organization']!r} at {runtime['url']}")
     print(f"  last check-in: {view.get('last_check_in') or 'not yet'}" + ("  (paused)" if view.get("paused") else ""))
+    if view.get("update") == "required":
+        print("  update required: Doppelwerk no longer accepts this doppel-runtime; it takes no reviews until updated")
+    elif view.get("update") == "available":
+        print("  update available: Doppelwerk speaks a newer protocol; update doppel-runtime when you can")
     if view.get("last_error"):
         print(f"  last error: {view['last_error']}")
     for seat in view.get("seats", []):
         login = f" @{seat['login']}" if seat.get("login") else ""
         print(f"  seat {seat['id']}  {seat.get('name') or 'member'}{login}  {seat['state']}")
     if not view.get("seats"):
-        print("  no seats yet: each member adds one from Settings → Macs")
+        print("  no seats yet: each member adds one from Runners")
     return 0

@@ -8,7 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 from doppel_control_plane import config
-from doppel_control_plane.bff import BffError, BffLink, BffState, add_routes, pair
+from doppel_control_plane.bff import PROTOCOL, BffError, BffLink, BffState, add_routes, pair
 from doppel_model_provider.broker import Broker
 from doppel_model_provider.codex_account import DeviceLogin
 from doppel_model_provider.codex_homes import CodexHomes
@@ -43,6 +43,8 @@ class FakeBff:
         self.check_ins: list[dict] = []
         self.revoked = False
         self.paused = False
+        self.protocol: dict | None = {"current": PROTOCOL, "minimum": 0}  # None: a BFF from before the handshake
+        self.pairs: list[dict] = []
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -57,13 +59,25 @@ class FakeBff:
             member = self.seats[sid]
             return {"id": sid, "payer": f"{ORG}/{member}", "user": {"id": member, "name": "David", "login": "david-gh"}}
 
+        def too_old(body):
+            if self.protocol and body.get("protocol", 0) < self.protocol["minimum"]:
+                message = "Update doppel-runtime on it, then restart it."
+                refusal = {"error": {"code": "runtime_outdated", "message": message}}
+                return web.json_response({**refusal, "protocol": self.protocol}, status=426)
+            return None
+
         async def do_pair(request):
             body = await request.json()
+            self.pairs.append(body)
+            if (refused := too_old(body)) is not None:
+                return refused
             if body["code"] != "dwp_good":
                 refusal = {"error": {"message": "That pair code is wrong, used or expired."}}
                 return web.json_response(refusal, status=404)
             self.credential = body["credential"]
             mac = {"runtime": {"id": "r1", "name": "Mac mini"}, "organization": {"id": ORG, "name": "Acme"}}
+            if self.protocol:
+                mac["protocol"] = self.protocol
             return web.json_response(mac)
 
         async def redeem(request):
@@ -79,6 +93,8 @@ class FakeBff:
             authorized(request)
             body = await request.json()
             self.check_ins.append(body)
+            if (refused := too_old(body)) is not None:
+                return refused
             if self.revoked:
                 return web.json_response({"revoked": True})
             reported = [s["id"] for s in body["seats"]]
@@ -88,6 +104,7 @@ class FakeBff:
                 "seats": [seat_json(sid) for sid in self.seats],
                 "remove_seats": [sid for sid in reported if sid not in self.seats],
                 "jobs": [], "check_in_after_seconds": 30,
+                **({"protocol": self.protocol} if self.protocol else {}),
             })  # fmt: skip
 
         app.router.add_post("/api/runtime/pair", do_pair)
@@ -252,3 +269,46 @@ def test_config_reads_the_bff_section(tmp_path):
     assert cfg.bff.url == "https://doppelwerk.example" and cfg.bff.check_in.total_seconds() == 10
     assert config.load(None, env={"DOPPEL_BFF_URL": "http://127.0.0.1:8792"}).bff.url == "http://127.0.0.1:8792"
     assert cfg.bff_dir == cfg.data_dir / "bff"
+
+
+async def test_the_handshake_says_which_protocol_and_follows_the_bffs_answer(world):
+    bff, url, state, link, _, _ = world
+    await pair(state, url, "dwp_good")
+    assert bff.pairs[-1]["protocol"] == PROTOCOL
+    await link.check_in()
+    assert bff.check_ins[-1]["protocol"] == PROTOCOL
+    assert link.update == "none" and link.view()["update"] == "none" and link.view()["protocol"] == PROTOCOL
+
+    # A newer BFF: still served, and an update is offered.
+    bff.protocol = {"current": PROTOCOL + 1, "minimum": 0}
+    assert await link.check_in() is not None
+    assert link.update == "available" and link.view()["bff_protocol"] == bff.protocol
+
+    # A BFF from before the handshake says nothing: nothing to update to.
+    bff.protocol = None
+    assert await link.check_in() is not None
+    assert link.update == "none"
+
+
+async def test_a_runtime_too_old_for_the_bff_takes_no_work_and_checks_back_slowly(world):
+    bff, url, state, link, _, _ = world
+    await pair(state, url, "dwp_good")
+    bff.protocol = {"current": PROTOCOL + 2, "minimum": PROTOCOL + 1}
+    assert await link.check_in() is None
+    assert link.update == "required" and link.every == 300
+    assert "Update doppel-runtime" in link.last_error
+    assert state.identity() is not None, "an outdated runtime stays paired: an update is all it needs"
+    # The BFF accepts it again (rolled back, or the runtime updated): back to its usual pace.
+    bff.protocol = {"current": PROTOCOL, "minimum": 0}
+    assert await link.check_in() is not None
+    assert (link.update, link.every, link.last_error) == ("none", 30, None)
+
+
+async def test_pairing_a_runtime_too_old_for_the_bff_says_to_update(tmp_path, world):
+    bff, url, _, _, _, _ = world
+    bff.protocol = {"current": PROTOCOL + 1, "minimum": PROTOCOL + 1}
+    fresh = BffState(tmp_path / "other")
+    with pytest.raises(BffError) as e:
+        await pair(fresh, url, "dwp_good")
+    assert e.value.status == 426 and e.value.protocol == bff.protocol and "Update doppel-runtime" in str(e.value)
+    assert fresh.identity() is None

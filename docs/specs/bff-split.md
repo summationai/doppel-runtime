@@ -17,6 +17,7 @@ Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoi
 | D7 approval | Ours: the merger. |
 | D8 trust | Ours: every doppel posts a COMMENT review. The trust ladder and private drafts are removed. Per-repo publishing on/off stays as an owner's kill switch. |
 | Unclaimed work | A slot no runtime claims within 2 hours expires. |
+| Runtime ↔ BFF compatibility | Decided 2026-11-24: a `protocol` number in pairing and check-ins, and the BFF's `{current, minimum}` in its answers. Below the minimum, 426 "update doppel-runtime"; below current, Runners offers an update. See §2b. |
 | Who closes a finding (RC #4) | Decided 2026-11-24: **(b)** anyone with write access, the PR's author included, by resolving the finding's thread; **plus the doppels:** each later review by a doppel gets that doppel's own still-open findings on the PR (never another doppel's) and says which the new commit fixes, and Doppelwerk resolves those threads. An open P0/P1 carries forward across commits until fixed or resolved; a bare reply doesn't close it. |
 
 Sections 2 to 4 below are the analysis behind these. Where a "Recommend" there differs from this table, the table wins.
@@ -64,10 +65,10 @@ The locked decisions in `docs/specs/built/` are the porting spec. Each row with 
 The runtime only ever calls out to the BFF; nothing calls in. Their companion protocol (pair code → device credential, a 30 s poll, start and finish per review) had the right shape, but checkpoint 1 removed it with the companion. Checkpoint 2 built the runtime's own protocol in its place (§4b; BFF `server/runtimes/`, runtime `doppel_control_plane/bff.py`):
 
 ```
-POST /api/runtime/pair      {code: dwp_…, credential: dwr_… the Mac made} → which Mac, which workspace
+POST /api/runtime/pair      {code: dwp_…, credential: dwr_… the Mac made, protocol} → which Mac, which workspace, protocol
 POST /api/runtime/seats     {code: dws_…} → the seat: id, payer `<workspace id>/<member id>`, member and login
-POST /api/runtime/check-in  {version, capacity, running: [job ids], seats: [{id, state, plan, quota}]}
-                            → {paused, caps, seats, remove_seats, jobs, check_in_after_seconds} | {revoked: true}
+POST /api/runtime/check-in  {version, protocol, capacity, running: [job ids], seats: [{id, state, plan, quota}]}
+                            → {paused, caps, seats, remove_seats, jobs, check_in_after_seconds, protocol} | {revoked: true}
 POST /api/runtime/jobs/:id  the result: verdict (D6) or failure, with each engine tried (checkpoint 4)
 ```
 
@@ -79,6 +80,34 @@ From what we learned about the companion protocol, the new one keeps these rules
 2. **Check-ins renew leases.** A check-in lists its running jobs, and the BFF extends their leases, so a large review can outlast a fixed lease.
 3. **Many jobs at once.** The companion's limit was one active review per person. Ours is a payer cap (default 2) plus a host cap, and one Mac serves many payers.
 4. **The result is our verdict.** See D6.
+
+## 2b. The handshake: which contract a runner speaks
+
+Decided 2026-11-24. Runners are installed by people and updated when someone gets to it, and the BFF ships several times
+a day, so the two must say which contract they speak rather than fail on a schema mismatch. The BFF's request schemas are
+strict: a field it doesn't know is a 400. So a change to the contract lands in the BFF first, then the runtime.
+
+- **One number, `protocol`.** The runtime sends it with pairing and every check-in (`PROTOCOL` in
+  `doppel_control_plane/bff.py`). A runner that sends none, from before the handshake, speaks **0**. The BFF keeps what
+  each runner last said (`runtimes.protocol`).
+- **The BFF's range.** The BFF accepts `{current, minimum}` (`runtimeProtocol` in its `shared/runtimes.ts`) and returns
+  it in the pair and check-in answers. Today: current 1, minimum 0.
+- **Below the minimum: 426.** Pairing and check-in answer `426 {error: {code: runtime_outdated, message}, protocol}`.
+  Pairing refuses before redeeming the code, so the same code works after an update. A refused check-in still records
+  when the runner was seen and what it speaks, but hands out no jobs and changes nothing else. The runtime stops the jobs
+  in hand, says "update required" in its log and in `doppel-runtime status`, and checks back every 5 minutes. It stays
+  paired: an update and a restart are all it needs.
+- **Below current: an update is offered.** The runner works as before. Runners shows **Update available**, the runtime
+  logs it once and `status` shows it. Below the minimum, Runners shows **Update required**.
+- **A newer runner than the BFF** (its protocol above the BFF's current) is accepted: the runtime must keep working
+  against a BFF that is one protocol behind it, since the BFF may be rolled back.
+- **Changing the contract.** Make the BFF accept both the old and the new shape and raise `current`; ship it. Then
+  raise the runtime's `PROTOCOL` with its side of the change and update the runners. Raise `minimum` only once the old
+  shape can be dropped: that takes every runner below it offline until it is updated.
+- **`version`** stays a label for people (the runtime's package version, shown on Runners); compatibility is `protocol`.
+
+Not yet: telling a runner *which* version to install, and updating itself. Both wait on packaging (a released image or
+package per version), which is still open.
 
 ## 3. Merging the ledgers
 
