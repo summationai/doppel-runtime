@@ -1,0 +1,110 @@
+# A release (docs/specs/packaging.md "Releasing"): push a tag vX.Y.Z that matches __version__. Everything CI checks runs
+# first; then both images for amd64 and arm64 (the sandbox first, so the runner names it by digest), the host command
+# for four platforms with the version and both digests built in, release.json, install.sh, SHA256SUMS, the GitHub
+# release, and the Homebrew formula in summationai/homebrew-tap (with the HOMEBREW_TAP_TOKEN secret; skipped without).
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # the GitHub release
+      packages: write # the images on ghcr.io
+    env:
+      RUNNER: ghcr.io/summationai/doppel-runtime
+      SANDBOX: ghcr.io/summationai/doppel-sandbox
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag matches the runtime's version
+        id: version
+        run: echo "version=$(python3 scripts/release/release.py check-version "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: The sandbox image
+        id: sandbox
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/sandbox-runtime/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.SANDBOX }}:${{ steps.version.outputs.version }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: The runner image, naming its sandbox by digest
+        id: runner
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/control-plane/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.RUNNER }}:${{ steps.version.outputs.version }}
+          build-args: SANDBOX_IMAGE=${{ env.SANDBOX }}@${{ steps.sandbox.outputs.digest }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.6"
+
+      - name: The host command, release.json, install.sh and SHA256SUMS
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          RUNNER_REF: ${{ env.RUNNER }}@${{ steps.runner.outputs.digest }}
+          SANDBOX_REF: ${{ env.SANDBOX }}@${{ steps.sandbox.outputs.digest }}
+        run: |
+          mkdir dist
+          flags="-s -w -X main.version=$VERSION -X main.runnerImage=$RUNNER_REF -X main.sandboxImage=$SANDBOX_REF"
+          for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
+            (cd cmd/doppel-runtime-host && CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
+              go build -trimpath -ldflags "$flags" -o "../../dist/doppel-runtime_${target%/*}_${target#*/}" .)
+          done
+          python3 scripts/release/release.py manifest "$VERSION" "$RUNNER_REF" "$SANDBOX_REF" > dist/release.json
+          cp scripts/release/install.sh dist/install.sh
+          (cd dist && sha256sum doppel-runtime_* install.sh release.json > SHA256SUMS)
+          python3 scripts/release/release.py notes "$VERSION" > notes.md
+          ./dist/doppel-runtime_linux_amd64 version
+
+      - name: The GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "doppel-runtime ${{ steps.version.outputs.version }}" --notes-file notes.md --verify-tag
+
+      - name: The Homebrew formula (summationai/homebrew-tap)
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::No HOMEBREW_TAP_TOKEN secret: the formula wasn't updated. brew install waits for it; install.sh works."
+            exit 0
+          fi
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/summationai/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          python3 scripts/release/release.py formula "$VERSION" dist/SHA256SUMS > tap/Formula/doppel-runtime.rb
+          cd tap
+          git config user.name "doppel-runtime release"
+          git config user.email "doppel-runtime-release@users.noreply.github.com"
+          git add Formula/doppel-runtime.rb
+          git commit -m "doppel-runtime $VERSION"
+          git push
