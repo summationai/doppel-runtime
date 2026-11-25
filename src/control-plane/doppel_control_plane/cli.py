@@ -3,6 +3,10 @@
     serve [--config PATH]                    run the runtime process (the daemon)
     pair CODE [--bff URL] [--replace]        pair this runner with Doppelwerk, using a code from Runners
     seat add CODE                            add a member's seat (their code from Runners), then sign them in
+    drain [--off]                            take no new reviews (an update waits for the running ones), or resume
+    forget                                   sign every seat out and forget the pairing (the host's `uninstall`)
+
+A code given as `-` is read from stdin, so it never appears on a command line (the host command passes it so).
     seat sign-in SEAT                        sign a seat's member in to Codex again
     status                                   which workspace this runner serves, and each seat's state
 
@@ -37,14 +41,20 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("serve", help="run the runtime process", parents=[common])
     p = sub.add_parser("pair", help="pair this runner with Doppelwerk", parents=[common])
-    p.add_argument("code", help="the one-time pair code (dwp_...) from Runners")
+    p.add_argument("code", help="the one-time pair code (dwp_...) from Runners, or - to read it from stdin")
     p.add_argument("--bff", help="Doppelwerk's address, e.g. https://doppelwerk.ac0.app")
     p.add_argument("--replace", action="store_true", help="pair again, replacing this runner's current pairing")
     seat = sub.add_parser("seat", help="a member's seat on this runner").add_subparsers(dest="seat", required=True)
     seat.add_parser("add", help="add a seat with its one-time code, then sign its member in",
-                    parents=[common]).add_argument("code")  # fmt: skip
+                    parents=[common]).add_argument("code", help="the seat code (dws_...), or - for stdin")  # fmt: skip
     seat.add_parser("sign-in", help="sign a seat's member in to Codex again", parents=[common]).add_argument("seat_id")
-    sub.add_parser("status", help="this runner's pairing and seats", parents=[common])
+    sub.add_parser("status", help="this runner's pairing and seats", parents=[common]).add_argument(
+        "--json", action="store_true", help="the daemon's view as JSON, for the host command"
+    )
+    sub.add_parser("drain", help="take no new reviews; --off to resume", parents=[common]).add_argument(
+        "--off", action="store_true"
+    )
+    sub.add_parser("forget", help="sign every seat out and forget the pairing", parents=[common])
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -53,11 +63,13 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(app.serve(cfg))
         return 0
     if args.command == "pair":
-        return _pair(cfg, args.code, args.bff, args.replace)
+        return _pair(cfg, _code(args.code), args.bff, args.replace)
     if args.command == "status":
-        return _status(cfg)
+        return _status_json(cfg) if args.json else _status(cfg)
+    if args.command in ("drain", "forget"):
+        return _control(cfg, args.command, not getattr(args, "off", False))
     if args.seat == "add":
-        return _seat(cfg, "/runtime/seats", {"code": args.code})
+        return _seat(cfg, "/runtime/seats", {"code": _code(args.code)})
     return _seat(cfg, f"/runtime/seats/{args.seat_id}/sign-in", {})
 
 
@@ -87,6 +99,31 @@ def _pair(cfg: config.Config, code: str, url: str | None, replace: bool) -> int:
     print("Start the runtime (doppel-runtime serve) and it checks in. Then each member adds a seat in Runners.")
 
     return 0
+
+
+def _code(given: str) -> str:
+    """A code as given, or read from stdin for `-`."""
+    return sys.stdin.readline().strip() if given == "-" else given
+
+
+def _status_json(cfg: config.Config) -> int:
+    try:
+        status, view = _internal(cfg, "GET", "/runtime")
+    except OSError:
+        print(json.dumps({"daemon": False}))
+        return 1
+    print(json.dumps({**view, "daemon": True}))
+    return 0 if status == 200 else 1
+
+
+def _control(cfg: config.Config, command: str, on: bool) -> int:
+    try:
+        status, answer = (_internal(cfg, "POST", "/runtime/drain", {"on": on}) if command == "drain"
+                          else _internal(cfg, "POST", "/runtime/forget", {}))  # fmt: skip
+    except OSError:
+        return _daemon_down(cfg)
+    print(json.dumps(answer))
+    return 0 if status == 200 else 1
 
 
 def _internal(cfg: config.Config, method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
