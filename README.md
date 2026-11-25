@@ -50,20 +50,20 @@ uv run doppel-runtime serve   # listeners on 127.0.0.1:8700 (model), 8701 (inter
 
 Config is a TOML file (`--config`) with `DOPPEL_*` environment overrides; see [src/control-plane/doppel_control_plane/config.py](src/control-plane/doppel_control_plane/config.py). It holds only what this machine needs (data folder, listeners, sandbox, host cap). Progress is tracked in [docs/specs/bff-split.md](docs/specs/bff-split.md) §5.
 
-## Onboarding a Mac
+## Connect a runner
 
-Doppelwerk's BFF orchestrates; this Mac runs reviews and keeps every sign-in ([docs/specs/bff-split.md](docs/specs/bff-split.md) §4b). The runtime only calls out to the BFF.
+Doppelwerk schedules reviews. A runner executes them and holds each member's model sign-in. Follow the [Linux runner guide](docs/linux-runner.md) for Ubuntu setup and a systemd service.
 
 ```sh
-doppel-runtime pair dwp_… --bff https://doppelwerk.ac0.app   # code: Doppelwerk → Settings → Macs → Add a Mac
+doppel-runtime pair dwp_… --bff https://doppelwerk.ac0.app   # Settings → Runners → Add a runner
 doppel-runtime serve                                         # checks in every 30 s
-doppel-runtime seat add dws_…    # a member's code (Settings → Macs → Add my seat); they approve Codex's sign-in in their browser
+doppel-runtime seat add dws_…    # Settings → Runners → Add my seat
 doppel-runtime status            # which workspace, and each seat's state
 ```
 
-Reviews arrive with check-ins: each job (the PR, a one-repository read token, and the doppel's persona, scope and files) runs in a Docker pod (`[sandbox] image`, gVisor where `runtime = "runsc"`), on the payer's own sign-in through the gateway, and its verdict goes back to Doppelwerk. This Mac keeps no review rules.
+Each member approves their Codex sign-in in their own browser. Jobs arrive at check-in with the PR, a one-repository read token, and the doppel's rules. Each job runs in a Docker pod using the payer's sign-in through the gateway. The runner returns its verdict to Doppelwerk.
 
-The pairing lives in `<data_dir>/bff/` (owner-only): the Mac's own credential, which Mac it is, and its seats. Each seat's Codex sign-in lives in the broker's home for payer `<workspace id>/<member id>`. A seat removed in Doppelwerk is signed out at the next check-in; a removed Mac signs every seat out and forgets its credential.
+The pairing lives in `<data_dir>/bff/` and each seat's Codex sign-in lives in the broker's home for that payer. Removing a seat signs it out at the next check-in. Removing a runner signs every seat out and clears its pairing.
 
 ## Docs
 

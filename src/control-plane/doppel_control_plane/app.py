@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import logging
 import signal
+import sys
 from datetime import UTC, datetime
 
 from aiohttp import web
@@ -28,6 +29,7 @@ from doppel_control_plane.bff import BffLink, BffState
 from doppel_control_plane.bff import add_routes as bff_routes
 from doppel_control_plane.config import LISTENERS, Config
 from doppel_control_plane.jobs import JobRunner
+from doppel_control_plane.pods import detect_runtime, isolation
 from doppel_control_plane.roles import ROLE_NAMES, Role
 from doppel_control_plane.runs import LedgerRuns
 from doppel_control_plane.store import Ledger
@@ -46,7 +48,9 @@ class Runtime:
         self.roles: dict[str, Role] = {}
         self._runners: list[web.AppRunner] = []
         self.bound: dict[str, tuple[str, int]] = {}  # listener -> (host, port) actually bound
+        self._model_bridge: str | None = None
         self.gateway: ModelRoute | None = None
+        self.pod_runtime: str | None = None  # the pods' OCI runtime, settled at start (detect_runtime)
         self.broker: Broker | None = None
         self.bff: BffLink | None = None
         self.jobs: JobRunner | None = None
@@ -92,6 +96,9 @@ class Runtime:
         self.bff = BffLink(state, self.broker, host_cap=self.config.host_cap, version=__version__, jobs=self.jobs)
         self.roles = {name: Role(name) for name in ROLE_NAMES}
         self.roles["bff"] = Role("bff", self._check_in, self.config.bff.check_in.total_seconds())
+        self.pod_runtime = await asyncio.to_thread(detect_runtime, self.config.sandbox.runtime)
+        self.bff.isolation = isolation(self.pod_runtime)
+        log.info("pods run %s", "under gVisor" if self.pod_runtime == "runsc" else "with Docker's standard runtime")
         await self._listen()  # first: the sandbox needs the model listener's port
         if state.identity() is not None:
             try:
@@ -112,14 +119,19 @@ class Runtime:
         from doppel_control_plane.pods import DockerPods
 
         cfg = self.config
-        owner = hashlib.sha256(f"jobs:{cfg.data_dir.resolve()}".encode()).hexdigest()[:12]
+        # Which pods are this runner's, for `sweep`: its data folder, and in a container its volume (every containerized
+        # runner's folder is the same path, so two on one Docker host would otherwise sweep each other's pods).
+        where = f"{cfg.data_dir.resolve()}" + (f"@{cfg.sandbox.data_volume}" if cfg.sandbox.data_volume else "")
+        owner = hashlib.sha256(f"jobs:{where}".encode()).hexdigest()[:12]
+        gateway_host = self._model_bridge or "host.docker.internal"
         pods = DockerPods(
             cfg.data_dir / "pods", Mirrors(cfg.data_dir / "mirrors", git_env=self.jobs.git_env),
             image=cfg.sandbox.image,
-            gateway_target=cfg.sandbox.gateway_target or f"host.docker.internal:{self.bound['model'][1]}",
+            gateway_target=cfg.sandbox.gateway_target or f"{gateway_host}:{self.bound['model'][1]}",
             repo_url=lambda pr: cfg.repo_url.format(repo=pr.repo),
             on_verdict=self.jobs.verdict, on_failed=self.jobs.failed,
-            runtime=cfg.sandbox.runtime, memory=cfg.sandbox.memory, cpus=cfg.sandbox.cpus, owner=owner,
+            runtime=self.pod_runtime, memory=cfg.sandbox.memory, cpus=cfg.sandbox.cpus, owner=owner,
+            data_volume=cfg.sandbox.data_volume, data_root=cfg.data_dir, network=cfg.sandbox.network,
         )  # fmt: skip
         pods.sweep()
         return pods
@@ -129,12 +141,28 @@ class Runtime:
             listener = self.config.listeners[name]
             runner = web.AppRunner(self._app(name), access_log=None)
             await runner.setup()
-            site = web.TCPSite(runner, listener.host, listener.port)
+            site = web.TCPSite(runner, listener.host or "127.0.0.1", listener.port)
             await site.start()
             host, port = site._server.sockets[0].getsockname()[:2]
             self.bound[name] = (host, port)
             self._runners.append(runner)
             log.info("listener %s on %s:%d", name, host, port)
+            if name == "model" and listener.host is None and sys.platform == "linux":
+                await self._listen_on_docker_bridge(runner, port)
+
+    async def _listen_on_docker_bridge(self, runner: web.AppRunner, port: int) -> None:
+        from doppel_control_plane.pods import docker_bridge_gateway
+
+        bridge = await asyncio.to_thread(docker_bridge_gateway)
+        if bridge is None:
+            return  # A broker-only process can run without Docker.
+        try:
+            await web.TCPSite(runner, bridge, port).start()
+        except OSError as exc:
+            log.warning("could not bind model listener on Docker bridge %s:%d: %s", bridge, port, exc)
+        else:
+            self._model_bridge = bridge
+            log.info("listener model on Docker bridge %s:%d", bridge, port)
 
     async def stop(self) -> None:
         for task in self._tasks:

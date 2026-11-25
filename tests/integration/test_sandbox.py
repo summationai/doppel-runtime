@@ -12,13 +12,14 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 from doppel_control_plane.mirrors import Mirrors
-from doppel_control_plane.pods import UID_BASE, DockerPods, docker
+from doppel_control_plane.pods import UID_BASE, DockerPods, docker, docker_bridge_gateway
 from doppel_shared.ports import ReviewJob
 from doppel_shared.types import PRRef
 from doppel_shared.verdict_schema import problems
@@ -114,7 +115,8 @@ async def world(tmp_path, image, repo):
     gw = FakeGateway()
     app = web.Application()
     app.router.add_route("*", "/model/{tail:.*}", gw.handle)
-    server = TestServer(app, host="127.0.0.1")
+    bridge = docker_bridge_gateway() if sys.platform == "linux" else None
+    server = TestServer(app, host=bridge or "127.0.0.1")
     await server.start_server()
     results: dict[int, asyncio.Future] = {}
 
@@ -125,7 +127,7 @@ async def world(tmp_path, image, repo):
 
     pods = DockerPods(
         tmp_path / "pods", Mirrors(tmp_path / "mirrors", partial=False), image=image,
-        gateway_target=f"host.docker.internal:{server.port}", repo_url=lambda pr: str(origin),
+        gateway_target=f"{bridge or 'host.docker.internal'}:{server.port}", repo_url=lambda pr: str(origin),
         pr_ref=lambda pr: "refs/heads/pr-1", base_branch=lambda pr: "main",
         on_verdict=lambda slot, v: done(slot, ("verdict", v)), on_failed=lambda slot, why: done(slot, ("failed", why)),
     )  # fmt: skip

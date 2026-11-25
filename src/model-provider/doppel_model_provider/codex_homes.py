@@ -11,13 +11,16 @@ Codex wrote it, every payer on disk). Tokens are never printed or logged.
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime
 from pathlib import Path
 
 from doppel_shared.ports.credentials import Credential, NotSignedIn
 
-CHATGPT_BASE = "https://chatgpt.com/backend-api/codex"  # a ChatGPT sign-in's model endpoint
+# A ChatGPT sign-in's model endpoint. DOPPEL_CHATGPT_BASE stands in a fake one for tests that run the runner in a
+# container, where it can't be patched; whoever sets a process's environment already holds its sign-ins.
+CHATGPT_BASE = os.environ.get("DOPPEL_CHATGPT_BASE") or "https://chatgpt.com/backend-api/codex"
 OPENAI_BASE = "https://api.openai.com/v1"  # an API key's
 SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 

@@ -1,10 +1,10 @@
 """The `doppel-runtime` command.
 
     serve [--config PATH]                    run the runtime process (the daemon)
-    pair CODE [--bff URL] [--replace]        pair this Mac with Doppelwerk, using a code from Runners
+    pair CODE [--bff URL] [--replace]        pair this runner with Doppelwerk, using a code from Runners
     seat add CODE                            add a member's seat (their code from Runners), then sign them in
     seat sign-in SEAT                        sign a seat's member in to Codex again
-    status                                   which workspace this Mac serves, and each seat's state
+    status                                   which workspace this runner serves, and each seat's state
 
 `seat` and `status` talk to the running daemon on its internal listener: its broker holds the sign-ins.
 `pair` works with or without the daemon running. Codes and credentials are never printed.
@@ -36,15 +36,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.set_defaults(config=None)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("serve", help="run the runtime process", parents=[common])
-    p = sub.add_parser("pair", help="pair this Mac with Doppelwerk", parents=[common])
+    p = sub.add_parser("pair", help="pair this runner with Doppelwerk", parents=[common])
     p.add_argument("code", help="the one-time pair code (dwp_...) from Runners")
     p.add_argument("--bff", help="Doppelwerk's address, e.g. https://doppelwerk.ac0.app")
-    p.add_argument("--replace", action="store_true", help="pair again, replacing this Mac's current pairing")
-    seat = sub.add_parser("seat", help="a member's seat on this Mac").add_subparsers(dest="seat", required=True)
+    p.add_argument("--replace", action="store_true", help="pair again, replacing this runner's current pairing")
+    seat = sub.add_parser("seat", help="a member's seat on this runner").add_subparsers(dest="seat", required=True)
     seat.add_parser("add", help="add a seat with its one-time code, then sign its member in",
                     parents=[common]).add_argument("code")  # fmt: skip
     seat.add_parser("sign-in", help="sign a seat's member in to Codex again", parents=[common]).add_argument("seat_id")
-    sub.add_parser("status", help="this Mac's pairing and seats", parents=[common])
+    sub.add_parser("status", help="this runner's pairing and seats", parents=[common])
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -67,7 +67,10 @@ def _pair(cfg: config.Config, code: str, url: str | None, replace: bool) -> int:
         print("Say where Doppelwerk is: --bff https://<its address>", file=sys.stderr)
         return 2
     if not code.startswith("dwp_"):
-        print("That isn't a pair code (dwp_...). Get one in Doppelwerk: Runners → Add a runner.", file=sys.stderr)
+        print(
+            "That isn't a pair code (dwp_...). Get one in Doppelwerk: Runners → Add a runner.",
+            file=sys.stderr,
+        )
         return 2
     try:
         identity = asyncio.run(pair(BffState(cfg.bff_dir), url, code, replace=replace, version=__version__))
@@ -80,7 +83,7 @@ def _pair(cfg: config.Config, code: str, url: str | None, replace: bool) -> int:
     except Exception as e:
         print(f"Not paired: couldn't reach {url} ({type(e).__name__})", file=sys.stderr)
         return 1
-    print(f"Paired: this Mac is {identity.name!r} in {identity.organization!r}.")
+    print(f"Paired: this runner is {identity.name!r} in {identity.organization!r}.")
     print("Start the runtime (doppel-runtime serve) and it checks in. Then each member adds a seat in Runners.")
 
     return 0
@@ -134,7 +137,7 @@ def _seat(cfg: config.Config, path: str, body: dict) -> int:
         except OSError:
             return _daemon_down(cfg)
         if state.get("state") == "connected":
-            print(f"Signed in. {who} can pay for reviews on this Mac.")
+            print(f"Signed in. {who} can pay for reviews on this runner.")
             return 0
         if state.get("state") in ("signed_out", "expired"):
             print("The sign-in didn't finish. Try again: doppel-runtime seat sign-in " + seat["id"], file=sys.stderr)
@@ -158,6 +161,12 @@ def _status(cfg: config.Config) -> int:
     runtime = view["runtime"]
     print(f"{runtime['name']!r} in {runtime['organization']!r} at {runtime['url']}")
     print(f"  last check-in: {view.get('last_check_in') or 'not yet'}" + ("  (paused)" if view.get("paused") else ""))
+    if view.get("isolation"):
+        print(f"  reviews run: {'under gVisor' if view['isolation'] == 'gvisor' else 'with standard Docker isolation'}")
+    release = view.get("release") or {}
+    if view.get("behind") and release.get("latest"):
+        print(f"  doppel-runtime {release['latest']} is out (this runner has {view.get('version')}): "
+              "run `doppel-runtime update`")  # fmt: skip
     if view.get("update") == "required":
         print("  update required: Doppelwerk no longer accepts this doppel-runtime; it takes no reviews until updated")
     elif view.get("update") == "available":

@@ -1,16 +1,16 @@
-"""This Mac's link to Doppelwerk's BFF (docs/specs/bff-split.md §2, §4b). The runtime only ever calls out.
+"""This runner's link to Doppelwerk's BFF (docs/specs/bff-split.md §2, §4b). The runtime only ever calls out.
 
-    pair()          a one-time pair code from Runners, plus a credential this Mac makes for itself
-                    (the BFF keeps only its hash) -> which Mac this is, in which workspace
+    pair()          a one-time pair code from Runners, plus a credential this runner makes for itself
+                    (the BFF keeps only its hash) -> which runner this is, in which workspace
     add_seat()      a member's one-time seat code -> their seat, filed under the payer id `<workspace>/<member>`,
                     then Codex's device sign-in in that payer's own home: the member approves it in their browser
     check_in()      every half minute: finished jobs' results, then each seat's state as the broker sees it, the jobs
-                    in hand and this Mac's free room out; back in: seats to sign out, pause, caps, jobs to stop, and
+                    in hand and this runner's free room out; back in: seats to sign out, pause, caps, jobs to stop, and
                     new jobs, which the JobRunner (jobs.py) starts in the sandbox.
-                    A Mac the BFF says was removed signs every seat out and forgets its credential.
+                    A runner the BFF says was removed signs every seat out and forgets its credential.
 
-What lives on this disk, under `<data_dir>/bff/`, owner-only: `credential` (the Mac's own), `runtime.json`
-(the BFF's address and which Mac this is) and `seats.json` (seat id -> payer and member, as the BFF last said).
+What lives on this disk, under `<data_dir>/bff/`, owner-only: `credential` (the runner's own), `runtime.json`
+(the BFF's address and which runner this is) and `seats.json` (seat id -> payer and member, as the BFF last said).
 The sign-ins themselves stay in the broker's Codex homes. Nothing here prints or logs a credential or a code.
 """
 
@@ -47,7 +47,7 @@ class Identity:
 @dataclass(frozen=True)
 class Seat:
     id: str
-    payer: str  # <workspace id>/<member id>: the broker's Codex home for this member on this Mac
+    payer: str  # <workspace id>/<member id>: the broker's Codex home for this member on this runner
     name: str | None
     login: str | None
 
@@ -56,9 +56,22 @@ class Seat:
 # check-in; the BFF answers with the range it accepts ({"current", "minimum"}). Below its minimum the BFF refuses
 # with 426 and this runtime takes no work until it is updated; below its current, it works and says an update is
 # available. Bump it with any change to what this side sends or reads, with the BFF's support for it.
-PROTOCOL = 1
+#   1  the handshake itself
+#   2  check-ins say how pods are isolated (`isolation`); answers name the latest release (docs/specs/packaging.md)
+PROTOCOL = 2
 UPDATE_REQUIRED = 426
 OUTDATED_EVERY = 300.0  # seconds between check-ins while the BFF refuses this version: it may be updated meanwhile
+
+
+def newer(a: str, b: str) -> bool:
+    """Whether version `a` is newer than `b`, both X.Y.Z. Anything else (a dev build) is never older: nothing to say."""
+
+    def parse(v: str) -> tuple[int, ...] | None:
+        parts = v.removeprefix("v").split(".")
+        return tuple(int(p) for p in parts) if len(parts) == 3 and all(p.isdigit() for p in parts) else None
+
+    pa, pb = parse(a), parse(b)
+    return pa is not None and pb is not None and pa > pb
 
 
 class BffError(Exception):
@@ -153,7 +166,7 @@ class BffClient:
             return data or {}
 
     async def report(self, job_id: str, result: dict) -> int:
-        """A job's result. Returns the BFF's status: 409 means the job isn't this Mac's any more."""
+        """A job's result. Returns the BFF's status: 409 means the job isn't this runner's any more."""
         try:
             await self._post(f"jobs/{job_id}", result)
             return 200
@@ -171,11 +184,11 @@ class BffClient:
 
 
 async def pair(state: BffState, url: str, code: str, *, replace: bool = False, version: str = "0") -> Identity:
-    """Redeem a pair code. The credential is made here and never leaves this Mac but as its one request."""
+    """Redeem a pair code. The credential is made here and never leaves this runner but as its one request."""
     current = state.identity()
     if current and not replace:
         raise ValueError(
-            f"this Mac is already paired as {current.name!r} in {current.organization!r}; "
+            f"this runner is already paired as {current.name!r} in {current.organization!r}; "
             "remove it in Doppelwerk first, or pass --replace"
         )
     credential = new_credential()
@@ -208,6 +221,9 @@ class BffLink:
         self.last_error: str | None = None
         self.update: str = "none"  # "available": the BFF speaks a newer protocol; "required": it refuses this one
         self.bff_protocol: dict | None = None
+        self.isolation: str | None = None  # how this runner's pods are isolated: "gvisor" or "standard"
+        self.release: dict | None = None  # the latest release Doppelwerk knows of: {"latest", "notes"}
+        self.behind = False  # this runner's version is older than it
         self._said_unpaired = False
         self.jobs = jobs  # the JobRunner (jobs.py); None: this runtime takes no jobs
         if jobs is not None:
@@ -251,6 +267,7 @@ class BffLink:
             body = {
                 "version": self.version,
                 "protocol": PROTOCOL,
+                **({"isolation": self.isolation} if self.isolation in ("gvisor", "standard") else {}),
                 "capacity": max(0, self.host_cap - len(running)),
                 "running": running,
                 "seats": [
@@ -271,7 +288,7 @@ class BffLink:
                         self.jobs.stop(running)
                     return None
                 if e.status == 401:
-                    log.error("bff: %s refused this Mac's credential; pair it again", identity.url)
+                    log.error("bff: %s refused this runner's credential; pair it again", identity.url)
                 else:
                     log.warning("bff: check-in refused (%s)", e.status)
                 return None
@@ -282,6 +299,7 @@ class BffLink:
             self.last_error = None
             self.last_check_in = now or None
             self._note_protocol(answer.get("protocol"))
+            self._note_release(answer.get("release"))
             if answer.get("revoked"):
                 if self.jobs is not None:
                     self.jobs.stop(running)
@@ -316,6 +334,16 @@ class BffLink:
                         current, PROTOCOL)  # fmt: skip
         self.update = update
 
+    def _note_release(self, release: object) -> None:
+        """The latest runtime release, as Doppelwerk knows it (protocol 2); None until there is one."""
+        latest = release.get("latest") if isinstance(release, dict) else None
+        self.release = release if isinstance(latest, str) else None
+        behind = newer(latest, self.version) if isinstance(latest, str) else False
+        if behind and not self.behind:
+            log.warning("bff: doppel-runtime %s is out (this runner has %s): run `doppel-runtime update`",
+                        latest, self.version)  # fmt: skip
+        self.behind = behind
+
     async def _sign_out(self, seat: Seat) -> None:
         try:
             await self.broker.disconnect(seat.payer)
@@ -325,7 +353,7 @@ class BffLink:
     async def add_seat(self, code: str) -> tuple[Seat, DeviceCode]:
         identity = self.state.identity()
         if identity is None:
-            raise NotPaired("this Mac isn't paired yet")
+            raise NotPaired("this runner isn't paired yet")
         async with self._lock:
             answer = await self._client_for(identity).redeem_seat(code)
             seat = _seat(answer["seat"])
@@ -354,6 +382,10 @@ class BffLink:
             "protocol": PROTOCOL,
             "bff_protocol": self.bff_protocol,
             "update": self.update,
+            "isolation": self.isolation,
+            "version": self.version,
+            "release": self.release,
+            "behind": self.behind,
             "seats": [{**asdict(s), "state": self._seat_state(s.payer)} for s in self.state.seats().values()]
             if identity
             else [],
@@ -366,10 +398,10 @@ def _seat(raw: dict) -> Seat:
 
 
 def add_routes(app: web.Application, link: BffLink) -> None:
-    """For the internal listener only: the CLI on this Mac adds seats through the running daemon, whose broker
+    """For the internal listener only: the CLI on this runner adds seats through the running daemon, whose broker
     holds the sign-ins.
 
-        GET  /runtime                        paired?, which Mac, paused, each seat and its state
+        GET  /runtime                        paired?, which runner, paused, each seat and its state
         POST /runtime/seats                  {code} -> the seat, and Codex's device sign-in to approve
         POST /runtime/seats/{seat}/sign-in   sign a seat's member in again -> the device sign-in to approve
     """
@@ -380,7 +412,7 @@ def add_routes(app: web.Application, link: BffLink) -> None:
         if isinstance(e, BffError):
             return web.json_response({"error": str(e)}, status=e.status if 400 <= e.status < 500 else 502)
         if isinstance(e, KeyError):
-            return web.json_response({"error": "no such seat on this Mac"}, status=404)
+            return web.json_response({"error": "no such seat on this runner"}, status=404)
         return web.json_response({"error": f"couldn't reach Doppelwerk ({type(e).__name__})"}, status=502)
 
     def seat_answer(seat: Seat, code: DeviceCode) -> web.Response:

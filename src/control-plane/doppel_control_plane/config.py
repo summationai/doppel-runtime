@@ -6,8 +6,8 @@ rules, repositories, the GitHub App.
 
     data_dir = "/var/lib/doppel"          # the ledger, the pairing, per-member Codex homes, mirrors and pods
 
-    [listeners.model]                     # the gateway's model route: the only thing pods reach
-    host = "10.0.0.1"
+    [listeners.model]                     # defaults to loopback plus the local Docker bridge on Linux
+    # host = "10.0.0.1"                   # override the automatic bind for a custom network
     port = 8700
 
     [listeners.internal]                  # the broker and seats, for this machine's CLI: never reachable from pods
@@ -33,10 +33,15 @@ rules, repositories, the GitHub App.
 
     [sandbox]
     image = "doppel-sandbox:dev"
-    runtime = "runsc"                     # gVisor where installed; leave out for Docker's default
+    runtime = "runsc"                     # gVisor; "auto": gVisor where Docker has it; leave out for Docker's default
     memory = "2g"
     cpus = "1"
-    gateway_target = ""                   # where pods' model calls go; default host.docker.internal:<model port>
+    gateway_target = ""                   # optional override for the model address as seen by Docker
+    data_volume = ""                      # the runner runs in a container with data_dir on this Docker volume:
+                                          # pods mount subpaths of it, not host folders (docs/specs/packaging.md)
+    network = ""                          # the Docker network the runner is on: the egress forwarder joins it
+
+Every [sandbox] key can be set as `DOPPEL_SANDBOX_<KEY>` (e.g. DOPPEL_SANDBOX_DATA_VOLUME); the runner image sets them.
 
 Sign-ins live at `<data_dir>/tenants/<workspace id>/<member id>/codex/auth.json` (owner-only).
 """
@@ -56,7 +61,7 @@ REPO_URL = "https://github.com/{repo}.git"
 
 @dataclass(frozen=True)
 class Listener:
-    host: str
+    host: str | None
     port: int
 
 
@@ -73,6 +78,8 @@ class SandboxConfig:
     memory: str = "2g"
     cpus: str = "1"
     gateway_target: str | None = None
+    data_volume: str | None = None
+    network: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,13 +116,20 @@ def load(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
     listeners = {}
     for name in LISTENERS:
         section = raw.get("listeners", {}).get(name, {})
-        host = env.get(f"DOPPEL_{name.upper()}_HOST") or section.get("host") or "127.0.0.1"
+        host = env.get(f"DOPPEL_{name.upper()}_HOST") or section.get("host")
         port = env.get(f"DOPPEL_{name.upper()}_PORT")
         listeners[name] = Listener(
-            host=host, port=int(port if port is not None else section.get("port", DEFAULT_PORTS[name]))
+            host=host if name == "model" else host or "127.0.0.1",
+            port=int(port if port is not None else section.get("port", DEFAULT_PORTS[name])),
         )
     homes = {payer: Path(p).expanduser() for payer, p in raw.get("broker", {}).get("homes", {}).items()}
     gh, sc, sb, bf = (raw.get(k, {}) for k in ("github", "scheduler", "sandbox", "bff"))
+
+    def sandbox(key: str) -> str | None:
+        value = env.get(f"DOPPEL_SANDBOX_{key.upper()}")
+        value = value if value is not None else sb.get(key)
+        return str(value) if value not in (None, "") else None
+
     return Config(
         data_dir=data_dir,
         listeners=listeners,
@@ -125,11 +139,13 @@ def load(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
             timedelta(seconds=bf.get("check_in_seconds", 30)),
         ),
         sandbox=SandboxConfig(
-            sb.get("image", SandboxConfig.image),
-            sb.get("runtime") or None,
-            sb.get("memory", SandboxConfig.memory),
-            str(sb.get("cpus", SandboxConfig.cpus)),
-            sb.get("gateway_target") or None,
+            sandbox("image") or SandboxConfig.image,
+            sandbox("runtime"),
+            sandbox("memory") or SandboxConfig.memory,
+            str(sandbox("cpus") or SandboxConfig.cpus),
+            sandbox("gateway_target"),
+            sandbox("data_volume"),
+            sandbox("network"),
         ),
         host_cap=int(sc.get("host_cap", 10)),
         repo_url=gh.get("repo_url", REPO_URL),
