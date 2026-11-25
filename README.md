@@ -68,6 +68,7 @@ The pairing lives in `<data_dir>/bff/` and each seat's Codex sign-in lives in th
 ## Docs
 
 - [docs/specs/built/](docs/specs/built/): what the runtime does today, one file per feature, with its locked decisions and the tests that hold them.
+- [docs/specs/next-reviews.md](docs/specs/next-reviews.md): the plan for next: CI rules, one kind of doppel, the requester pays (not decided yet), and what else is open.
 - [docs/specs/packaging.md](docs/specs/packaging.md): how a runner is released, installed, paired and updated with one command, Docker being the only prerequisite (decided, not built).
 - [docs/specs/doppel-service.md](docs/specs/doppel-service.md): the spec. Decisions, scheduler, sandbox, credentials, rules (DSV-1 to DSV-14), the Friday demo and open questions.
 - [docs/reviews/](docs/reviews/): review findings and what we decided to do with each.
