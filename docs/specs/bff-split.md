@@ -13,10 +13,11 @@ Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoi
 | D2 unit of work | Ours: one review per (PR, head, doppel). |
 | D3 who pays | Ours: a personal doppel's owner pays; an app doppel's named payer pays. |
 | D4 triggers | App doppels follow the org's `event`. Personal doppels run when their owner is requested. Commands always run. |
-| Force pushes | Reviewed, like any new head. |
+| Force pushes | Changed 2026-11-24: the workspace chooses. **On new pushes** reviews a new head only when it extends the last one (GitHub's compare says `ahead`); **On all events** reviews any new head, rebases, amends and force pushes included. Both review a PR that opens, reopens or is marked ready. Any push still stops the old head's reviews, and a requested person's doppel reviews every new head. |
 | D7 approval | Ours: the merger. |
 | D8 trust | Ours: every doppel posts a COMMENT review. The trust ladder and private drafts are removed. Per-repo publishing on/off stays as an owner's kill switch. |
 | Unclaimed work | A slot no runtime claims within 2 hours expires. |
+| Runtime ↔ BFF compatibility | Decided 2026-11-24: a `protocol` number in pairing and check-ins, and the BFF's `{current, minimum}` in its answers. Below the minimum, 426 "update doppel-runtime"; below current, Runners offers an update. See §2b. |
 | Who closes a finding (RC #4) | Decided 2026-11-24: **(b)** anyone with write access, the PR's author included, by resolving the finding's thread; **plus the doppels:** each later review by a doppel gets that doppel's own still-open findings on the PR (never another doppel's) and says which the new commit fixes, and Doppelwerk resolves those threads. An open P0/P1 carries forward across commits until fixed or resolved; a bare reply doesn't close it. |
 
 Sections 2 to 4 below are the analysis behind these. Where a "Recommend" there differs from this table, the table wins.
@@ -64,10 +65,10 @@ The locked decisions in `docs/specs/built/` are the porting spec. Each row with 
 The runtime only ever calls out to the BFF; nothing calls in. Their companion protocol (pair code → device credential, a 30 s poll, start and finish per review) had the right shape, but checkpoint 1 removed it with the companion. Checkpoint 2 built the runtime's own protocol in its place (§4b; BFF `server/runtimes/`, runtime `doppel_control_plane/bff.py`):
 
 ```
-POST /api/runtime/pair      {code: dwp_…, credential: dwr_… the Mac made} → which Mac, which workspace
+POST /api/runtime/pair      {code: dwp_…, credential: dwr_… the Mac made, protocol} → which Mac, which workspace, protocol
 POST /api/runtime/seats     {code: dws_…} → the seat: id, payer `<workspace id>/<member id>`, member and login
-POST /api/runtime/check-in  {version, capacity, running: [job ids], seats: [{id, state, plan, quota}]}
-                            → {paused, caps, seats, remove_seats, jobs, check_in_after_seconds} | {revoked: true}
+POST /api/runtime/check-in  {version, protocol, capacity, running: [job ids], seats: [{id, state, plan, quota}]}
+                            → {paused, caps, seats, remove_seats, jobs, check_in_after_seconds, protocol} | {revoked: true}
 POST /api/runtime/jobs/:id  the result: verdict (D6) or failure, with each engine tried (checkpoint 4)
 ```
 
@@ -79,6 +80,34 @@ From what we learned about the companion protocol, the new one keeps these rules
 2. **Check-ins renew leases.** A check-in lists its running jobs, and the BFF extends their leases, so a large review can outlast a fixed lease.
 3. **Many jobs at once.** The companion's limit was one active review per person. Ours is a payer cap (default 2) plus a host cap, and one Mac serves many payers.
 4. **The result is our verdict.** See D6.
+
+## 2b. The handshake: which contract a runner speaks
+
+Decided 2026-11-24. Runners are installed by people and updated when someone gets to it, and the BFF ships several times
+a day, so the two must say which contract they speak rather than fail on a schema mismatch. The BFF's request schemas are
+strict: a field it doesn't know is a 400. So a change to the contract lands in the BFF first, then the runtime.
+
+- **One number, `protocol`.** The runtime sends it with pairing and every check-in (`PROTOCOL` in
+  `doppel_control_plane/bff.py`). A runner that sends none, from before the handshake, speaks **0**. The BFF keeps what
+  each runner last said (`runtimes.protocol`).
+- **The BFF's range.** The BFF accepts `{current, minimum}` (`runtimeProtocol` in its `shared/runtimes.ts`) and returns
+  it in the pair and check-in answers. Today: current 1, minimum 0.
+- **Below the minimum: 426.** Pairing and check-in answer `426 {error: {code: runtime_outdated, message}, protocol}`.
+  Pairing refuses before redeeming the code, so the same code works after an update. A refused check-in still records
+  when the runner was seen and what it speaks, but hands out no jobs and changes nothing else. The runtime stops the jobs
+  in hand, says "update required" in its log and in `doppel-runtime status`, and checks back every 5 minutes. It stays
+  paired: an update and a restart are all it needs.
+- **Below current: an update is offered.** The runner works as before. Runners shows **Update available**, the runtime
+  logs it once and `status` shows it. Below the minimum, Runners shows **Update required**.
+- **A newer runner than the BFF** (its protocol above the BFF's current) is accepted: the runtime must keep working
+  against a BFF that is one protocol behind it, since the BFF may be rolled back.
+- **Changing the contract.** Make the BFF accept both the old and the new shape and raise `current`; ship it. Then
+  raise the runtime's `PROTOCOL` with its side of the change and update the runners. Raise `minimum` only once the old
+  shape can be dropped: that takes every runner below it offline until it is updated.
+- **`version`** stays a label for people (the runtime's package version, shown on Runners); compatibility is `protocol`.
+
+Not yet: telling a runner *which* version to install, and updating itself. Both wait on packaging (a released image or
+package per version), which is still open.
 
 ## 3. Merging the ledgers
 
@@ -242,7 +271,7 @@ Eight checkpoints. Each one is built in the clone on its own branch, then shippe
 | 0 | Regroup the BFF | The server is grouped as `platform/`, `github/`, `workspace/`, `intake/`, `reviews/` and `shared/`, and `tests/architecture.test.ts` enforces the imports. Behaviour is unchanged. | 75 tests pass, 2 are skipped. | **Live, v63** (2026-11-23) |
 | 1 | One path, clean schema | Doppels become rows (details below). Removed: the companion, its Rust program, profiles, drafts, review history, analytics and the ChatGPT/Grok links. Settings lose their dead keys. | All 28 release checks pass on a fork of production, including the data checks. | **Live, v64**, plus v65 removing a leftover download (2026-11-24) |
 | 2 | Macs and seats | **BFF:** `runtimes` and `runtime_seats` tables, the "Add a Mac" pair code, seat codes, and the check-in POST. The Mac sends its roster; the answer says which seats to remove, whether to pause, the caps, and whether the runtime is revoked (§4b). **Runtime:** `doppel-runtime pair`, `seat add` (Codex device sign-in), and the check-in loop as a daemon. | A Mac paired to the local BFF shows its seats, and revoking it from the BFF stops it. | **Live, v66** (2026-11-24); runtime side in its own PR |
-| 3 | Intake and slots | The webhook makes one slot per (PR, head, doppel) (D2); force pushes are reviewed too. App doppels follow the workspace's event and personal doppels run when their person is requested (D4). Each slot gets its payer (D3). A slot not claimed within 2 h becomes `expired`. | A PR webhook makes the right slots, and stale ones expire. | **Live, v67** (2026-11-24) |
+| 3 | Intake and slots | The webhook makes one slot per (PR, head, doppel) (D2); `push` reviews heads that extend the last, `all` any new head. App doppels follow the workspace's event and personal doppels run when their person is requested (D4). Each slot gets its payer (D3). A slot not claimed within 2 h becomes `expired`. | A PR webhook makes the right slots, and stale ones expire. | **Live, v67** (2026-11-24) |
 | 4 | Jobs to the Mac | The check-in answer carries jobs, assigned only where the payer has a ready seat, within the payer and host caps. A job carries a one-repo read token and a snapshot of the doppel's rules. The Mac runs it in the sandbox and reports the result. | A Mac reviews a PR on a sandbox repo end to end. | **Live, v69** (2026-11-24); runtime side in its own PR |
 | 5 | Posting and the merger | The BFF posts each doppel's review as a COMMENT as Doppelcloud (D8), and the merger decides and approves (D7), with its status. When a slot expires, the merger stops waiting for a personal doppel, and an app doppel's PR stays unapproved with the reason. The merger's locked decisions and tests are ported. | A PR gets its doppels' comments and the merger's decision. | **Live, v70** (2026-11-24) |
 | 6 | Commands and dispositions | `@doppelwerk review` and the other commands, dispositions on findings, and the reconcile poll (D9–D11). | — | **Live, v71** (2026-11-24) |
@@ -302,7 +331,7 @@ Checkpoint 3 in detail (migration `20261124140000_review_slots`, BFF `server/slo
 
 - **Where events come from.** Signed `pull_request` webhooks, plus a sync of each enrolled repository's recently updated PRs every 10 minutes for deliveries GitHub never made (D11). Both go through one planner that compares the saved PR with GitHub's, under a row lock, so an event read twice changes nothing and a delivery older than the saved PR is ignored (except an un-request).
 - **Slots.** `review_slots` holds one row per (PR, head, doppel) (D2), with its payer (D3): a personal doppel's person, found by their linked GitHub login, or an app doppel's named payer. No payer means `waiting_on = no_payer`. `pull_request_doppels` records which doppels are on each PR.
-- **Triggers (D4).** App doppels: `opened` reviews opened, reopened and marked-ready PRs; `push` and `all` also review every new head, force pushes included. They run only on insiders' PRs (OWNER, MEMBER, COLLABORATOR) that pass the workspace's filters. Path filters wait until a PR's files are known. A repository's ownership map, when it names doppels, limits its app doppels to those. Personal doppels review when their person is requested, whatever the event setting, and every new head after that. A person's own review keeps their doppel (`pull_request_review`); only an un-request removes it.
+- **Triggers (D4).** App doppels: `opened`, `push` and `all` each review opened, reopened and marked-ready PRs. On a new head, `push` reviews it only when it extends the last head (GitHub's compare says `ahead`; asked only for `push` workspaces; not known counts as extending, a vanished old head as rewritten), and `all` reviews any new head, force pushes included (restored 2026-11-24, after v68 had merged the two). They run only on insiders' PRs (OWNER, MEMBER, COLLABORATOR) that pass the workspace's filters. Path filters wait until a PR's files are known. A repository's ownership map, when it names doppels, limits its app doppels to those. Personal doppels review when their person is requested, whatever the event setting, and every new head after that. A person's own review keeps their doppel (`pull_request_review`); only an un-request removes it.
 - **Timing.** Every trigger sets a 90 s settle. A new head cancels the old head's slots (`head_moved`). Drafts wait unless the workspace reviews drafts. Closing or merging cancels everything. A sync meeting a PR opened over an hour ago records it without reviewing it, so connecting a repository doesn't review its backlog. The worker expires slots no Mac took within 2 hours (`unclaimed`), checking at least every 5 minutes.
 - **Shown** on the PR's page: each doppel's review of each head, its state and who pays.
 - **Not yet:** path-level ownership routing (needs the PR's files when the review is planned); cancelling queued slots when a doppel is removed from the workspace (checkpoint 4's claim skips them); commands (checkpoint 6).
