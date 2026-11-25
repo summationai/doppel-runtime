@@ -46,3 +46,8 @@ jobs:
           DOPPEL_DOCKER_TESTS: "1"
           DOPPEL_TEST_SANDBOX_RUNTIME: runsc
         run: uv run pytest -q tests/integration/test_runtime_docker.py
+      - name: The runner in a container, from its volume (gVisor found automatically)
+        env:
+          DOPPEL_DOCKER_TESTS: "1"
+          DOPPEL_TEST_SANDBOX_RUNTIME: runsc
+        run: uv run pytest -q tests/integration/test_runner_container.py

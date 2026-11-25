@@ -161,6 +161,8 @@ def _status(cfg: config.Config) -> int:
     runtime = view["runtime"]
     print(f"{runtime['name']!r} in {runtime['organization']!r} at {runtime['url']}")
     print(f"  last check-in: {view.get('last_check_in') or 'not yet'}" + ("  (paused)" if view.get("paused") else ""))
+    if view.get("isolation"):
+        print(f"  reviews run: {'under gVisor' if view['isolation'] == 'gvisor' else 'with standard Docker isolation'}")
     if view.get("update") == "required":
         print("  update required: Doppelwerk no longer accepts this doppel-runtime; it takes no reviews until updated")
     elif view.get("update") == "available":

@@ -208,6 +208,7 @@ class BffLink:
         self.last_error: str | None = None
         self.update: str = "none"  # "available": the BFF speaks a newer protocol; "required": it refuses this one
         self.bff_protocol: dict | None = None
+        self.isolation: str | None = None  # how this runner's pods are isolated: "gvisor" or "standard"
         self._said_unpaired = False
         self.jobs = jobs  # the JobRunner (jobs.py); None: this runtime takes no jobs
         if jobs is not None:
@@ -354,6 +355,7 @@ class BffLink:
             "protocol": PROTOCOL,
             "bff_protocol": self.bff_protocol,
             "update": self.update,
+            "isolation": self.isolation,
             "seats": [{**asdict(s), "state": self._seat_state(s.payer)} for s in self.state.seats().values()]
             if identity
             else [],

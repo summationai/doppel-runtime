@@ -63,3 +63,19 @@ def test_a_runner_reads_its_cap_and_where_it_fetches_and_ignores_the_old_standal
     cfg = load(f, env={})
     assert (cfg.host_cap, cfg.repo_url) == (3, "file:///repos/{repo}")
     assert load(env={}).repo_url == "https://github.com/{repo}.git"
+
+
+def test_sandbox_keys_come_from_the_file_then_doppel_sandbox_env(tmp_path):
+    f = tmp_path / "c.toml"
+    f.write_text('[sandbox]\nimage = "from-file"\nruntime = "runsc"\nnetwork = "file-net"\n')
+    env = {
+        "DOPPEL_SANDBOX_RUNTIME": "auto",
+        "DOPPEL_SANDBOX_DATA_VOLUME": "doppel-runtime-data",
+        "DOPPEL_SANDBOX_GATEWAY_TARGET": "doppel-runtime:8700",
+        "DOPPEL_SANDBOX_NETWORK": "",  # the environment wins, and empty clears the file's value
+    }
+    sb = load(f, env=env).sandbox
+    assert (sb.image, sb.runtime, sb.network) == ("from-file", "auto", None)
+    assert (sb.data_volume, sb.gateway_target) == ("doppel-runtime-data", "doppel-runtime:8700")
+    plain = load(None, env={}).sandbox
+    assert (plain.data_volume, plain.network, plain.runtime) == (None, None, None)

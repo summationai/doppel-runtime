@@ -29,6 +29,7 @@ from doppel_control_plane.bff import BffLink, BffState
 from doppel_control_plane.bff import add_routes as bff_routes
 from doppel_control_plane.config import LISTENERS, Config
 from doppel_control_plane.jobs import JobRunner
+from doppel_control_plane.pods import detect_runtime, isolation
 from doppel_control_plane.roles import ROLE_NAMES, Role
 from doppel_control_plane.runs import LedgerRuns
 from doppel_control_plane.store import Ledger
@@ -49,6 +50,7 @@ class Runtime:
         self.bound: dict[str, tuple[str, int]] = {}  # listener -> (host, port) actually bound
         self._model_bridge: str | None = None
         self.gateway: ModelRoute | None = None
+        self.pod_runtime: str | None = None  # the pods' OCI runtime, settled at start (detect_runtime)
         self.broker: Broker | None = None
         self.bff: BffLink | None = None
         self.jobs: JobRunner | None = None
@@ -94,6 +96,9 @@ class Runtime:
         self.bff = BffLink(state, self.broker, host_cap=self.config.host_cap, version=__version__, jobs=self.jobs)
         self.roles = {name: Role(name) for name in ROLE_NAMES}
         self.roles["bff"] = Role("bff", self._check_in, self.config.bff.check_in.total_seconds())
+        self.pod_runtime = await asyncio.to_thread(detect_runtime, self.config.sandbox.runtime)
+        self.bff.isolation = isolation(self.pod_runtime)
+        log.info("pods run %s", "under gVisor" if self.pod_runtime == "runsc" else "with Docker's standard runtime")
         await self._listen()  # first: the sandbox needs the model listener's port
         if state.identity() is not None:
             try:
@@ -114,7 +119,10 @@ class Runtime:
         from doppel_control_plane.pods import DockerPods
 
         cfg = self.config
-        owner = hashlib.sha256(f"jobs:{cfg.data_dir.resolve()}".encode()).hexdigest()[:12]
+        # Which pods are this runner's, for `sweep`: its data folder, and in a container its volume (every containerized
+        # runner's folder is the same path, so two on one Docker host would otherwise sweep each other's pods).
+        where = f"{cfg.data_dir.resolve()}" + (f"@{cfg.sandbox.data_volume}" if cfg.sandbox.data_volume else "")
+        owner = hashlib.sha256(f"jobs:{where}".encode()).hexdigest()[:12]
         gateway_host = self._model_bridge or "host.docker.internal"
         pods = DockerPods(
             cfg.data_dir / "pods", Mirrors(cfg.data_dir / "mirrors", git_env=self.jobs.git_env),
@@ -122,7 +130,8 @@ class Runtime:
             gateway_target=cfg.sandbox.gateway_target or f"{gateway_host}:{self.bound['model'][1]}",
             repo_url=lambda pr: cfg.repo_url.format(repo=pr.repo),
             on_verdict=self.jobs.verdict, on_failed=self.jobs.failed,
-            runtime=cfg.sandbox.runtime, memory=cfg.sandbox.memory, cpus=cfg.sandbox.cpus, owner=owner,
+            runtime=self.pod_runtime, memory=cfg.sandbox.memory, cpus=cfg.sandbox.cpus, owner=owner,
+            data_volume=cfg.sandbox.data_volume, data_root=cfg.data_dir, network=cfg.sandbox.network,
         )  # fmt: skip
         pods.sweep()
         return pods

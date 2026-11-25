@@ -14,6 +14,10 @@ process's environment, which another user can't read (review #5). The capability
 
 A run's verdict (the last stdout line) goes to `on_verdict(slot_id, verdict)`; anything else to
 `on_failed(slot_id, why)`. On summini the pod runs under gVisor (`runtime="runsc"`).
+
+Where the runner itself runs in a container (docs/specs/packaging.md), its data folder is a Docker volume
+(`data_volume`): a pod's /work and /job are then that volume's subpaths, since a folder path inside the runner means
+nothing to the Docker host. And the egress forwarder joins the runner's own network (`network`) to reach its gateway.
 """
 
 from __future__ import annotations
@@ -87,6 +91,22 @@ def docker(*args: str, check: bool = True, timeout: int = 300) -> str:
     return run.stdout.strip()
 
 
+def detect_runtime(configured: str | None) -> str | None:
+    """The pods' OCI runtime: as configured, or with "auto", gVisor where Docker has `runsc` registered."""
+    if configured != "auto":
+        return configured
+    try:
+        runtimes = json.loads(docker("info", "--format", "{{json .Runtimes}}", check=False, timeout=10) or "{}")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    return "runsc" if isinstance(runtimes, dict) and "runsc" in runtimes else None
+
+
+def isolation(runtime: str | None) -> str:
+    """How pods are isolated, as Doppelwerk shows it: gVisor, or Docker's standard runtime."""
+    return "gvisor" if runtime == "runsc" else "standard"
+
+
 def docker_bridge_gateway() -> str | None:
     """The local IPv4 bridge address that a Linux Docker container uses to reach its host."""
     try:
@@ -130,8 +150,14 @@ class DockerPods:
         memory: str = "2g",
         cpus: str = "1",
         owner: str = "",  # labels this runtime's containers and networks, so `sweep` removes only its own
+        data_volume: str | None = None,  # the runner's data folder is this volume, mounted at `data_root`
+        data_root: Path | None = None,
+        network: str | None = None,  # the runner's own network: the forwarder joins it to reach `gateway_target`
     ):
+        if data_volume and data_root is None:
+            raise ValueError("data_volume needs data_root: where the volume is mounted in the runner")
         self.root, self.mirrors = root, mirrors
+        self.data_volume, self.data_root, self.network = data_volume, data_root, network
         self.image, self.gateway_target, self.runtime = image, gateway_target, runtime
         self.repo_url, self.pr_ref, self.base_branch = repo_url, pr_ref, base_branch
         self.on_verdict, self.on_failed = on_verdict, on_failed
@@ -146,10 +172,17 @@ class DockerPods:
     def _ensure_egress(self) -> None:
         if docker("ps", "-q", "--filter", f"name=^{self.egress}$"):
             return
-        docker("run", "-d", "--rm", "--name", self.egress, *self.labels,
-               "--add-host", "host.docker.internal:host-gateway",
+        where = ["--network", self.network] if self.network else ["--add-host", "host.docker.internal:host-gateway"]
+        docker("run", "-d", "--rm", "--name", self.egress, *self.labels, *where,
                "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                self.egress_image, "python", "-c", EGRESS_SCRIPT, self.gateway_target)  # fmt: skip
+
+    def _mount(self, folder: Path, target: str) -> list[str]:
+        """A pod's read-only view of one of the runner's folders: a host bind, or a subpath of the runner's volume."""
+        if not self.data_volume:
+            return ["-v", f"{folder}:{target}:ro"]
+        sub = folder.resolve().relative_to(self.data_root.resolve()).as_posix()
+        return ["--mount", f"type=volume,src={self.data_volume},dst={target},volume-subpath={sub},readonly"]
 
     # ---- the Sandbox port ----------------------------------------------------------------------------
 
@@ -174,7 +207,7 @@ class DockerPods:
                 "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,mode=1777",
                 "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                 "--memory", self.memory, "--cpus", self.cpus, "--pids-limit", "512",
-                "-v", f"{folder / 'work'}:/work:ro", "-v", f"{folder / 'job'}:/job:ro",
+                *self._mount(folder / "work", "/work"), *self._mount(folder / "job", "/job"),
                 "--label", f"doppel.pr={pr}", *self.labels, self.image,
             )  # fmt: skip
         except Exception:
