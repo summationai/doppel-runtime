@@ -116,6 +116,21 @@ async def test_a_job_starts_in_its_prs_pod_with_the_doppels_rules_and_its_run_pa
     assert len(sandbox.started) == 1, "the same job twice starts once"
 
 
+async def test_the_doppels_model_and_effort_reach_the_reviewer_when_codex_knows_them(world):
+    bff, ledger, sandbox, runner, link = world
+    doppel = job()["doppel"]
+    bff.to_give = [
+        job(doppel={**doppel, "config": {"model": "gpt-6-sol", "effort": "xhigh"}}),
+        job(doppel={**doppel, "handle": "infra", "config": {"model": "gpt-9-imaginary", "effort": "ultra"}}),
+        job(doppel={**doppel, "handle": "docs", "config": {}}),
+    ]
+    await link.check_in()
+    picked = {j.reviewer: (j.model, j.effort) for _, j in sandbox.started}
+    assert picked == {"security": ("gpt-6-sol", "xhigh"), "infra": (None, None), "docs": (None, None)}, (
+        "an unknown model, or an effort the default model may not take: Codex's defaults"
+    )
+
+
 async def test_a_commands_focus_reaches_the_reviewer(world):
     bff, ledger, sandbox, runner, link = world
     bff.to_give = [job(focus="the refund path")]
