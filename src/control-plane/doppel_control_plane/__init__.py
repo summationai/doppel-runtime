@@ -12,4 +12,4 @@ Inside the control plane, `store` imports only `doppel_shared`; the rest may imp
 and `doppel_model_provider`, which it runs in-process.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
