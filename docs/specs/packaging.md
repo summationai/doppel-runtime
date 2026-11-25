@@ -1,7 +1,8 @@
 # Packaging: installing, pairing and updating a runner
 
-Status: decided 2026-11-24, not built. Today a runner is installed by hand: the mini's VM follows
-the Linux runner guide in #19 (`docs/linux-runner.md`) step by step, and an update means copying a commit in from a laptop.
+Status: decided 2026-11-24. Steps 1 and 2 are built (doppel-runtime #26, Doppelwerk v79); step 3, the host command,
+is built (see "Order of work"); steps 4 and 5 are not. Until the first release a runner is installed by hand: the mini's VM
+follows the Linux runner guide from #19 step by step, and an update means copying a commit in from a laptop.
 This spec replaces that with releases and one command, on a Mac or Linux, with Docker as the only thing to install first.
 
 ## Decided
@@ -57,7 +58,7 @@ of its own.
 | `doppel-runtime status` | The host command's version, the runner's version, protocol, isolation and image; then the runner's own status (pairing, last check-in, update available or required, seats). |
 | `doppel-runtime logs [-f]` | The runner's log. |
 | `doppel-runtime update [--version X.Y.Z]` | Below. |
-| `doppel-runtime uninstall` | Signs every seat out, tells Doppelwerk the runner is gone, removes the container, the network and (after a confirmation, or `--yes`) the volume. Removing the host command itself is `brew uninstall` or deleting the file. |
+| `doppel-runtime uninstall` | Signs every seat out and forgets the pairing (`doppel-runtime forget` in the runner), removes the container, the network and (after a confirmation, or `--yes`) the volume, and says to remove the runner in Doppelwerk's Runners: Doppelwerk has no route for a runner to remove itself (not yet). Removing the host command itself is `brew uninstall` or deleting the file. |
 
 ## `doppel-runtime update`
 
@@ -75,8 +76,9 @@ One command, safe to run any time, that leaves the runner on the target version 
 6. **Swap.** Stop the old container and keep it, renamed `doppel-runtime-previous`; start the new one on the same
    volume and network. The new runner upgrades what's in the volume if its layout changed (each layout carries a
    version; an upgrade is forward-only and the old layout is kept until the new runner has checked in once).
-7. **Prove it.** Wait for a successful check-in (up to 2 minutes). Then remove the old container and old images, and
-   print the new version and "Online". If the new runner doesn't check in, put the old container back, say what the new
+7. **Prove it.** Wait for a successful check-in (up to 2 minutes). Then remove the old container and the old images
+   (only digest-pinned ones, which a release installed: never a tag someone keeps), and print the new version and
+   "Online". If the new runner doesn't check in, put the old container back, say what the new
    one logged, and exit non-zero.
 
 No re-pairing and no signing in again: the pairing and the sign-ins are in the volume.
@@ -113,7 +115,14 @@ Pushing a tag `vX.Y.Z` runs one workflow:
 2. Build and push both images for both architectures; record their digests.
 3. Build the host command for the four platforms with the runner and sandbox digests and the version built in;
    `SHA256SUMS` over the binaries and `install.sh`.
-4. Create the GitHub release with the binaries, `SHA256SUMS`, `install.sh`, the protocol number and the notes.
+4. Create the GitHub release with the binaries (`doppel-runtime_<os>_<arch>`), `SHA256SUMS`, `install.sh`, the notes,
+   and `release.json`, which `update` reads to pick its target:
+
+   ```json
+   {"version": "0.2.0", "protocol": 2,
+    "runner_image": "ghcr.io/summationai/doppel-runtime@sha256:…",
+    "sandbox_image": "ghcr.io/summationai/doppel-sandbox@sha256:…"}
+   ```
 5. Update the formula in `summationai/homebrew-tap` to the new binaries and their sums.
 
 The runtime's version (`__version__`, shown on Runners) comes from the tag. A release that raises `PROTOCOL` says so in
@@ -135,10 +144,27 @@ pairing and sign-ins:
    and sandbox Dockerfiles; the integration tests run against the containerized runner.
 2. **Protocol 2 in the BFF**, then in the runtime: `isolation` in, `release` out; Runners and the two dialogs.
 3. **The host command** in Go (`cmd/doppel-runtime-host/`, built as `doppel-runtime`): `doctor`, `pair`, `seat add`,
-   `status`, `logs`, `uninstall`, then `update` with its rollback; tests against a real Docker in CI.
+   `status`, `logs`, `uninstall`, then `update` with its rollback; tests against a real Docker in CI. **Built:** Go
+   standard library only, built and tested in Go's own image (`golang:1.24.6`), so nothing is installed to work on it;
+   `tests/integration/test_host_command.py` pairs, gets a review done, updates, rolls a broken update back and
+   uninstalls against real Docker. The runner gained what it needs: codes on stdin (`pair -`, `seat add -`),
+   `status --json`, `drain [--off]` (check-ins offer no room) and `forget`. `import` (step 5) is not built.
 4. **The release workflow**, `install.sh` and the Homebrew tap; the first release, `v0.2.0`.
 5. **The mini moved over** with `import`; this spec's steps run by someone other than its author on a clean Mac and a
    clean Linux VM.
+
+## Overrides for tests
+
+None of these is for a real install; each lets a test run beside one without touching it.
+
+| Where | Variable | Does |
+|---|---|---|
+| Host command | `DOPPEL_HOST_PREFIX` | Names the container, volume and network `<prefix>`, `<prefix>-data`, `<prefix>-previous` |
+| Host command | `DOPPEL_RUNTIME_IMAGE`, `DOPPEL_SANDBOX_IMAGE` | Local images instead of this build's release; `update --runner-image/--sandbox-image` likewise |
+| Host command | `DOPPEL_HOST_EXTRA_RUN_ARGS` | A JSON array of extra `docker run` arguments for the runner (fixture repos, a fake model) |
+| Host command | `DOPPEL_HOST_RELEASES` | Where releases are read from, instead of GitHub |
+| Host command | `DOPPEL_HOST_PROVE_WITHIN` | How long an updated runner has to check in (default 2m) |
+| Runner | `DOPPEL_CHATGPT_BASE`, `DOPPEL_REPO_URL` | A fake model endpoint; where mirrors fetch from |
 
 ## Open
 

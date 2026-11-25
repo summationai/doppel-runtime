@@ -348,3 +348,27 @@ def test_newer_compares_x_y_z_and_never_flags_what_it_cant_compare():
     assert newer("0.10.0", "0.9.0") and newer("1.0.0", "v0.9.9")
     assert not newer("1.2.3", "1.2.3") and not newer("1.2.9", "1.3.0")
     assert not newer("1.0.0", "test") and not newer("0.1.0-dev", "0.0.1")
+
+
+async def test_a_draining_runner_offers_no_room_and_resumes(world):
+    bff, url, state, link, _, _ = world
+    await pair(state, url, "dwp_good")
+    link.draining = True
+    await link.check_in()
+    assert bff.check_ins[-1]["capacity"] == 0 and link.view()["draining"] is True
+    link.draining = False
+    await link.check_in()
+    assert bff.check_ins[-1]["capacity"] == 3
+
+
+async def test_forget_signs_every_seat_out_and_drops_the_pairing(world):
+    bff, url, state, link, account, tmp = world
+    await pair(state, url, "dwp_good")
+    seat, _ = await link.add_seat("dws_david")
+    account.approve.set()
+    await link.broker.wait_for_login(seat.payer)
+    assert await link.forget() == 1
+    assert not (tmp / "tenants" / ORG / DAVID / "codex").exists()
+    assert state.identity() is None and not (tmp / "bff" / "credential").exists()
+    calls = len(bff.check_ins)
+    assert await link.check_in() is None and len(bff.check_ins) == calls, "a forgotten runner doesn't call out"

@@ -224,6 +224,7 @@ class BffLink:
         self.isolation: str | None = None  # how this runner's pods are isolated: "gvisor" or "standard"
         self.release: dict | None = None  # the latest release Doppelwerk knows of: {"latest", "notes"}
         self.behind = False  # this runner's version is older than it
+        self.draining = False  # an update is waiting for the jobs in hand: take no new ones (docs/specs/packaging.md)
         self._said_unpaired = False
         self.jobs = jobs  # the JobRunner (jobs.py); None: this runtime takes no jobs
         if jobs is not None:
@@ -268,7 +269,7 @@ class BffLink:
                 "version": self.version,
                 "protocol": PROTOCOL,
                 **({"isolation": self.isolation} if self.isolation in ("gvisor", "standard") else {}),
-                "capacity": max(0, self.host_cap - len(running)),
+                "capacity": 0 if self.draining else max(0, self.host_cap - len(running)),
                 "running": running,
                 "seats": [
                     {"id": sid, "state": self._seat_state(s.payer), "plan": None, "quota": None}
@@ -364,6 +365,18 @@ class BffLink:
         log.info("bff: seat %s added", seat.id)
         return seat, await self.broker.login(seat.payer)
 
+    async def forget(self) -> int:
+        """Leave Doppelwerk from this side (`uninstall`): stop the jobs in hand, sign every seat out, forget the
+        credential. Doppelwerk still lists the runner until someone removes it there."""
+        async with self._lock:
+            if self.jobs is not None:
+                self.jobs.stop(self.jobs.running())
+            seats = self.state.seats()
+            for seat in seats.values():
+                await self._sign_out(seat)
+            self.state.forget()
+            return len(seats)
+
     async def sign_in(self, seat_id: str) -> tuple[Seat, DeviceCode]:
         seat = self.state.seats().get(seat_id)
         if seat is None:
@@ -386,6 +399,8 @@ class BffLink:
             "version": self.version,
             "release": self.release,
             "behind": self.behind,
+            "draining": self.draining,
+            "jobs": len(self.jobs.running()) if self.jobs is not None else 0,  # in hand
             "seats": [{**asdict(s), "state": self._seat_state(s.payer)} for s in self.state.seats().values()]
             if identity
             else [],
@@ -404,6 +419,8 @@ def add_routes(app: web.Application, link: BffLink) -> None:
         GET  /runtime                        paired?, which runner, paused, each seat and its state
         POST /runtime/seats                  {code} -> the seat, and Codex's device sign-in to approve
         POST /runtime/seats/{seat}/sign-in   sign a seat's member in again -> the device sign-in to approve
+        POST /runtime/drain                  {on} take no new jobs (an update waits for the ones in hand) -> jobs
+        POST /runtime/forget                 sign every seat out and forget the pairing (uninstall)
     """
 
     def refused(e: Exception) -> web.Response:
@@ -439,6 +456,16 @@ def add_routes(app: web.Application, link: BffLink) -> None:
         except KeyError as e:
             return refused(e)
 
+    async def drain(request: web.Request) -> web.Response:
+        body = await request.json()
+        link.draining = bool(body.get("on", True)) if isinstance(body, dict) else True
+        return web.json_response({"draining": link.draining, "jobs": link.view()["jobs"]})
+
+    async def forget(_: web.Request) -> web.Response:
+        return web.json_response({"signed_out": await link.forget()})
+
     app.router.add_get("/runtime", view)
+    app.router.add_post("/runtime/drain", drain)
+    app.router.add_post("/runtime/forget", forget)
     app.router.add_post("/runtime/seats", add_seat)
     app.router.add_post("/runtime/seats/{seat}/sign-in", sign_in)

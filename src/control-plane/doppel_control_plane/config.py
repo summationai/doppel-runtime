@@ -30,6 +30,7 @@ rules, repositories, the GitHub App.
 
     [github]
     repo_url = "https://github.com/{repo}.git"   # where mirrors fetch from, with each job's one-repo read token
+                                                 # (DOPPEL_REPO_URL overrides it: fixture repos in tests)
 
     [sandbox]
     image = "doppel-sandbox:dev"
@@ -148,5 +149,5 @@ def load(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
             sandbox("network"),
         ),
         host_cap=int(sc.get("host_cap", 10)),
-        repo_url=gh.get("repo_url", REPO_URL),
+        repo_url=env.get("DOPPEL_REPO_URL") or gh.get("repo_url", REPO_URL),
     )
