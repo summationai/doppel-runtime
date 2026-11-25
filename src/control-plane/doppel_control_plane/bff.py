@@ -1,6 +1,6 @@
 """This Mac's link to Doppelwerk's BFF (docs/specs/bff-split.md §2, §4b). The runtime only ever calls out.
 
-    pair()          a one-time pair code from Settings → Macs, plus a credential this Mac makes for itself
+    pair()          a one-time pair code from Runners, plus a credential this Mac makes for itself
                     (the BFF keeps only its hash) -> which Mac this is, in which workspace
     add_seat()      a member's one-time seat code -> their seat, filed under the payer id `<workspace>/<member>`,
                     then Codex's device sign-in in that payer's own home: the member approves it in their browser
@@ -52,10 +52,20 @@ class Seat:
     login: str | None
 
 
+# The contract this runtime speaks with the BFF (docs/specs/bff-split.md §2b). It goes with pairing and every
+# check-in; the BFF answers with the range it accepts ({"current", "minimum"}). Below its minimum the BFF refuses
+# with 426 and this runtime takes no work until it is updated; below its current, it works and says an update is
+# available. Bump it with any change to what this side sends or reads, with the BFF's support for it.
+PROTOCOL = 1
+UPDATE_REQUIRED = 426
+OUTDATED_EVERY = 300.0  # seconds between check-ins while the BFF refuses this version: it may be updated meanwhile
+
+
 class BffError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, protocol: dict | None = None):
         super().__init__(message)
         self.status = status
+        self.protocol = protocol  # the BFF's range, on a 426
 
 
 class NotPaired(Exception):
@@ -138,7 +148,8 @@ class BffClient:
                 data = None
             if r.status >= 400:
                 message = ((data or {}).get("error") or {}).get("message") if isinstance(data, dict) else None
-                raise BffError(r.status, message or f"the BFF answered {r.status}")
+                protocol = data.get("protocol") if isinstance(data, dict) else None
+                raise BffError(r.status, message or f"the BFF answered {r.status}", protocol)
             return data or {}
 
     async def report(self, job_id: str, result: dict) -> int:
@@ -150,7 +161,7 @@ class BffClient:
             return e.status
 
     async def pair(self, code: str, credential: str) -> dict:
-        return await self._post("pair", {"code": code, "credential": credential})
+        return await self._post("pair", {"code": code, "credential": credential, "protocol": PROTOCOL})
 
     async def redeem_seat(self, code: str) -> dict:
         return await self._post("seats", {"code": code})
@@ -195,6 +206,8 @@ class BffLink:
         self.every: float | None = None  # what the BFF asked for, in seconds
         self.last_check_in: str | None = None
         self.last_error: str | None = None
+        self.update: str = "none"  # "available": the BFF speaks a newer protocol; "required": it refuses this one
+        self.bff_protocol: dict | None = None
         self._said_unpaired = False
         self.jobs = jobs  # the JobRunner (jobs.py); None: this runtime takes no jobs
         if jobs is not None:
@@ -237,6 +250,7 @@ class BffLink:
             running = self.jobs.running() if self.jobs is not None else []
             body = {
                 "version": self.version,
+                "protocol": PROTOCOL,
                 "capacity": max(0, self.host_cap - len(running)),
                 "running": running,
                 "seats": [
@@ -248,6 +262,14 @@ class BffLink:
                 answer = await self._client_for(identity).check_in(body)
             except BffError as e:
                 self.last_error = str(e)
+                if e.status == UPDATE_REQUIRED:
+                    # Too old for this BFF: no work until updated. Keep asking, slowly, in case the BFF changes.
+                    if self.update != "required":
+                        log.error("bff: update doppel-runtime: %s", e)
+                    self.update, self.bff_protocol, self.every = "required", e.protocol, OUTDATED_EVERY
+                    if self.jobs is not None:
+                        self.jobs.stop(running)
+                    return None
                 if e.status == 401:
                     log.error("bff: %s refused this Mac's credential; pair it again", identity.url)
                 else:
@@ -259,6 +281,7 @@ class BffLink:
                 return None
             self.last_error = None
             self.last_check_in = now or None
+            self._note_protocol(answer.get("protocol"))
             if answer.get("revoked"):
                 if self.jobs is not None:
                     self.jobs.stop(running)
@@ -282,6 +305,16 @@ class BffLink:
             after = answer.get("check_in_after_seconds")
             self.every = float(min(max(after, 5), 300)) if isinstance(after, int | float) else None
             return answer
+
+    def _note_protocol(self, protocol: object) -> None:
+        """What the BFF said it speaks. A BFF from before the handshake says nothing: nothing to update to."""
+        current = protocol.get("current") if isinstance(protocol, dict) else None
+        self.bff_protocol = protocol if isinstance(protocol, dict) else None
+        update = "available" if isinstance(current, int) and current > PROTOCOL else "none"
+        if update == "available" and self.update != "available":
+            log.warning("bff: Doppelwerk speaks protocol %s and this runtime %s: update doppel-runtime when you can",
+                        current, PROTOCOL)  # fmt: skip
+        self.update = update
 
     async def _sign_out(self, seat: Seat) -> None:
         try:
@@ -318,6 +351,9 @@ class BffLink:
             "caps": self.caps,
             "last_check_in": self.last_check_in,
             "last_error": self.last_error,
+            "protocol": PROTOCOL,
+            "bff_protocol": self.bff_protocol,
+            "update": self.update,
             "seats": [{**asdict(s), "state": self._seat_state(s.payer)} for s in self.state.seats().values()]
             if identity
             else [],
