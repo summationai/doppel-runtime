@@ -84,9 +84,7 @@ def _pair(cfg: config.Config, code: str, url: str | None, replace: bool) -> int:
         print(f"Not paired: couldn't reach {url} ({type(e).__name__})", file=sys.stderr)
         return 1
     print(f"Paired: this runner is {identity.name!r} in {identity.organization!r}.")
-    print(
-        "Start the runtime (doppel-runtime serve) and it checks in. Then each member adds a seat in Runners."
-    )
+    print("Start the runtime (doppel-runtime serve) and it checks in. Then each member adds a seat in Runners.")
 
     return 0
 
@@ -158,9 +156,7 @@ def _status(cfg: config.Config) -> int:
               if identity else "Not paired, and the runtime isn't running.")  # fmt: skip
         return 1
     if not view.get("paired"):
-        print(
-            "Not paired. Get a code in Doppelwerk (Runners → Add a runner), then: doppel-runtime pair <code>"
-        )
+        print("Not paired. Get a code in Doppelwerk (Runners → Add a runner), then: doppel-runtime pair <code>")
         return 0
     runtime = view["runtime"]
     print(f"{runtime['name']!r} in {runtime['organization']!r} at {runtime['url']}")
