@@ -1,9 +1,8 @@
 # Next: CI rules, one kind of doppel, and the requester pays
 
-Status: plan, 2026-11-25. Nothing here is decided or built yet. Items 1–3 are Steven's; each says how it works today,
-the change, and what to settle before building. Items 2 and 3 change decisions D3 and D4 in
-[bff-split.md](bff-split.md); once settled, they move into its Decided table. "Also open" collects what else was left
-on 2026-11-24.
+Status: plan, 2026-11-25. Items 1–3 are Steven's; each says how it works today, the change, and what to settle before
+building. Items 2 and 3 are **decided** (2026-11-25, below) and replace D3 and D4 in [bff-split.md](bff-split.md).
+Item 1 is still open. "Also open" collects what else was left on 2026-11-24.
 
 ## 1. CI rules
 
@@ -51,6 +50,13 @@ Does the merger still need "at least one automatic review" before approving, or 
 data: drop `doppels.kind` (keep `login`), and a migration for existing personal doppels. The roster's 13 personal doppels
 would start reviewing automatically wherever routing names them: check routing first.
 
+**Decided (2026-11-25).** One kind. A doppel has no person: the GitHub username and "reviews when its person is
+requested" are gone, and so are `pull_request_review` handling and un-requests. Every doppel reviews on the workspace's
+events, in the repositories it belongs to (`any_repo` / `repos`), as routing narrows it, and on commands. The merger
+waits for every doppel on the PR. Migration `20261125040000_one_kind_of_doppel`: former personal doppels come over
+belonging to **no repository** (so nothing starts reviewing or spending until someone picks repositories), without their
+login; `kind`, `login` and `payer_id` stay as unused columns for a later release to drop.
+
 ## 3. The requester pays, and any available doppel reviews
 
 **Today.** Each doppel has one payer: an app doppel's named payer, a personal doppel's person (D3). A review waits
@@ -69,6 +75,18 @@ who pays then: a fallback, or nobody?) The per-payer cap (2 at once) now applies
 does a member need to agree that their seat pays for every PR they open (a setting per member, on by default)? The
 data: `review_slots.payer_id` chosen at queue time from the requester, not the doppel; the claim and cap code in
 `server/slots/jobs.ts`; the Runners page's "who pays" wording.
+
+**Decided (2026-11-25).** The requester pays: the PR's author for automatic reviews, the commenter for a command. They
+can pay when their GitHub login is linked to a member of the workspace with a seat on one of its runners. When they
+can't, a workspace setting (Settings → Who pays) decides:
+
+- **Skip the review** (default): the slots are kept as `cancelled`, reason `requester_cannot_pay`, so the PR says why; a
+  command is refused with a reply saying how to get a seat. The merger doesn't approve around a skipped review.
+- **Use a member's seat**: one chosen member pays (they need a seat too, or the reviews wait and expire).
+
+A doppel has no payer. The per-payer cap (2 at once) now applies to the requester. Known edges, left for later: a review
+skipped on a head isn't re-queued when the author later gets a seat (the next push, or a command, reviews it); a
+member's own automatic reviews can hold their command behind the cap.
 
 ## Also open (from 2026-11-24)
 
@@ -102,4 +120,5 @@ data: `review_slots.payer_id` chosen at queue time from the requester, not the d
 - Fix `HOMEBREW_TAP_TOKEN` (Contents: Read and write on summationai/homebrew-tap; approved by the org if pending).
 - The mini: pair the VM (`doppel-runtime pair <code> --bff https://doppelwerk.ac0.app`), and a system startup service
   so the VM comes back after a reboot (one `sudo`). Remove the old offline "Sum MacMini" in Runners.
-- `steven-doppel`: clear its GitHub username to make it automatic now (until item 2 lands), set Paid for by, reopen #4.
+- `steven-doppel`: after the one-kind release it belongs to no repository: pick its repositories, and take a seat on a
+  runner (or set Settings → Who pays), then push to #4 or comment `@doppelwerk review`.

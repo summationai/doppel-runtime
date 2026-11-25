@@ -11,8 +11,8 @@ Status: decided 2026-11-23, written against the BFF at v62 (`ef05a8c`). Checkpoi
 | One path | The Mac runtime is the only thing that runs reviews. The Rust laptop companion, its endpoints and the legacy settings compatibility are removed. |
 | Live data | Keep users, orgs, members, GitHub accounts and installations, enrolled repos, doppels, review settings and ownership. Drop companion devices, review attempts, drafts and job history. |
 | D2 unit of work | Ours: one review per (PR, head, doppel). |
-| D3 who pays | Ours: a personal doppel's owner pays; an app doppel's named payer pays. |
-| D4 triggers | App doppels follow the org's `event`. Personal doppels run when their owner is requested. Commands always run. |
+| D3 who pays | The requester pays (2026-11-25, replacing per-doppel payers): the PR's author for automatic reviews, the commenter for a command, when they're a linked member with a seat on a runner. Otherwise the workspace's `fallback`: skip (default) or one named member's seat. See [next-reviews.md](next-reviews.md) §3. |
+| D4 triggers | One kind of doppel (2026-11-25): every doppel follows the org's `event` in the repositories it belongs to and routing gives it. Nothing follows a review request. Commands always run. See [next-reviews.md](next-reviews.md) §2. |
 | Force pushes | Changed 2026-11-24: the workspace chooses. **On new pushes** reviews a new head only when it extends the last one (GitHub's compare says `ahead`); **On all events** reviews any new head, rebases, amends and force pushes included. Both review a PR that opens, reopens or is marked ready. Any push still stops the old head's reviews, and a requested person's doppel reviews every new head. |
 | D7 approval | Ours: the merger. |
 | D8 trust | Ours: every doppel posts a COMMENT review. The trust ladder and private drafts are removed. Per-repo publishing on/off stays as an owner's kill switch. |
